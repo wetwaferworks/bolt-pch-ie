@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/brand/readme-banner-1280x320.png" alt="Bolt PCHIE" width="100%">
+  <img src="docs/brand/bolt-pchie-github-banner-2560x640.png" alt="Bolt PCHIE — The harness that verifies what it saves" width="1280">
 </p>
 
 # Bolt PCHIE
