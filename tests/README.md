@@ -1,0 +1,3 @@
+# tests
+
+Tests for the core harness. Each test is named for what it checks: engine bring-up gates (`pchie_spine`, `pchie_timing_handshake`, `pchie_kernels`, `pchie_generate`, `pchie_cuda_gate`, `pchie_fork_batching`, `pchie_search_gate`), the hash chain, the Nemotron model, the PCH gate and stack, HTN and NCM planning, the Trace grader and curriculum, the LithoKraft pilot, the maze and robustness suites (`pchie_maze`, `pchie_determinism_gauntlet`, `pchie_freeze_recovery`, `pchie_prompt_injection`, `pchie_budget_timeout`, `pchie_mirror_sim_gate`, `pchie_pit_fixture`, `pchie_scaled_pit_maze`), and the Stage B puzzle-maze doors (`pchie_stageb_door`). Each test prints its chain head so a run can be compared with the reports.

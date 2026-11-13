@@ -1,0 +1,7 @@
+# Bench witness policy for a single machine.
+# jd-local is the local cosigner, and cortana-producer is the producer witness.
+# elfie is listed but not required, so that witness never needs access to the machine that holds the log.
+policy=bench
+witnesses=jd-local,cortana-producer,elfie
+threshold=2
+required=jd-local,cortana-producer

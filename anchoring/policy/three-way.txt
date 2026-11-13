@@ -1,0 +1,5 @@
+# Defined witness policy: a three-way cosign by jd-local, cortana-producer and elfie.
+# Open for more witnesses or servers: list more ids and raise the threshold. Public keys live in the log's witness_registry.txt.
+policy=three-way
+witnesses=jd-local,cortana-producer,elfie
+threshold=3

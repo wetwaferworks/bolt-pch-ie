@@ -1,0 +1,25 @@
+build/
+build-*/
+*.orig
+
+# Never commit keys, anchor or witness state, run outputs, recordings, or large binaries.
+anchoring/log/
+anchoring/witness/
+anchoring/build/
+anchoring/witness_out/*
+anchoring/witness_in/*
+*.key
+*.pem
+recordings/
+*.mp4
+*.gguf
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+runs/
+VOID_*/
+# Local lab artifacts and secrets. Never commit these.
+local/
+tesla-seed.bin
