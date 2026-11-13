@@ -12,6 +12,8 @@ An open-source robotics test bed for on-device inference, built around NVIDIA Ne
 
 Build from source and run the quick tests:
 
+- [Quick start: running the maze](docs/guide/quick-start-maze.md) from a release download
+- [Playing LithoKraft](docs/guide/playing-lithokraft.md), the game build that ships with the release
 - [Getting started on Windows](docs/guide/getting-started-windows.md)
 - [Getting started on Linux](docs/guide/getting-started-linux.md)
 
@@ -49,6 +51,8 @@ Labels only move up by a person's decision. Everything added in November 2026 is
 
 A researcher-facing guide lives under [`docs/guide/`](docs/guide/README.md). It is written from the code, tests, and notes in this tree. Hashes quoted there are provisional unless they belong to a frozen Official record. The harness is described as tamper-evident, never tamper proof.
 
+- [Quick start: running the maze](docs/guide/quick-start-maze.md)
+- [Playing LithoKraft](docs/guide/playing-lithokraft.md)
 - [Getting started on Windows](docs/guide/getting-started-windows.md)
 - [Getting started on Linux](docs/guide/getting-started-linux.md)
 - [Checksums](docs/guide/checksums.md)

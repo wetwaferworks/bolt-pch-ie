@@ -6,6 +6,8 @@ Hashes quoted in this guide are provisional unless they belong to a frozen Offic
 
 ## Pages
 
+- [Quick start: running the maze](quick-start-maze.md) - From a release download to a sealed maze run: prerequisites, the model file, demo runs, and how to read the output.
+- [Playing LithoKraft](playing-lithokraft.md) - The playtest build that ships with the release: launch, controls, inventory, components, the Component Test world, and how the harness drives it.
 - [Getting started on Windows](getting-started-windows.md) — Prerequisites, a Release build, the quick tests, a first harness run, and common errors.
 - [Getting started on Linux](getting-started-linux.md) — The same walk-through for a single-configuration Linux build.
 - [Checksums](checksums.md) — How to verify `SHA256SUMS` with `Get-FileHash`, `certutil`, and `sha256sum`.
