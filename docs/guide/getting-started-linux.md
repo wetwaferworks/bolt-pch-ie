@@ -26,7 +26,7 @@ cmake --build build -j "$(nproc)"
 
 Ninja works too, if you prefer it: add `-G Ninja` to the configure line. This is a single-configuration build, so you do not pass `--config Release` to the build or to CTest.
 
-The reasoning layer is part of this root build. The tools you will use first land in `build/`, including `pchie_anchor`, `pchie_tesla_watcher`, `pchie_lk_pilot`, `pchie_stageb_door_test`, and `pchie_rl_l1l2_test`. CUDA is controlled by `PCHIE_CUDA` and is on by default when a CUDA compiler is found.
+The reasoning layer is part of this root build. The tools you will use first land in `build/`, including `pchie_anchor`, `pchie_tesla_watcher`, `pchie_neml`, `pchie_stageb_door_test`, and `pchie_rl_l1l2_test`. The LithoKraft pilot and the vision driver talk to the game through Windows pipes, so they build on Windows only. CUDA is controlled by `PCHIE_CUDA` and is on by default when a CUDA compiler is found.
 
 ## Run the quick tests
 

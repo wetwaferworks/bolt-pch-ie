@@ -14,9 +14,9 @@ One driver, `pchie_lk_visnav.cpp`. The older way-shut, reach, seeded-maze, and C
 | `--neml on\|off\|DIR`, `--neml-inject` | Episodic memory ledger. A receipt is written after every nav run unless `--neml off`; DIR picks another ledger folder. Inject (the memory block in the prompt) stays off. |
 | `PCHIE_SCRATCH_CUDA_VISNAV` | Compile-time. The decide step uses the CUDA adapter. The CPU build does not define it. |
 
-The ledger lives in `include/pchie/neml/` (its checks are `tests/pchie_neml_test.cpp`). `cuda/CudaNemotronModel.h` is the labeled CUDA adapter. `scripts/` holds the pure-region extractor and the old reach launch notes. Those notes still name the scratch paths they were written for. `visnav_pure_test.cpp` needs `pure.inc`, which is generated and not checked in.
+The ledger lives in `include/pchie/neml/` (its checks are `tests/pchie_neml_test.cpp`). `cuda/CudaNemotronModel.h` is the labeled CUDA adapter. `scripts/extract.py` is the pure-region extractor. `visnav_pure_test.cpp` needs `pure.inc`, which is generated and not checked in: from `vision/`, run `python scripts/extract.py pchie_lk_visnav.cpp pure.inc`.
 
-Build from `vision/`, after the root Release `pchie_core.lib` exists:
+The root CMake Release build on Windows builds the CPU driver as `build\Release\pchie_lk_visnav.exe`, with everything else. The two scripts here build it on its own, from `vision/`, after the root Release `pchie_core.lib` exists. They find Visual Studio 2022 through `vswhere` (any edition with the C++ tools), or use the compiler already on `PATH` in a Developer Command Prompt.
 
-- `build_visnav.bat` builds the CPU driver.
+- `build_visnav.bat` builds the CPU driver into `vision\build\`.
 - `build_cuda.bat` builds the CUDA driver. It needs `CUDA_PATH`.

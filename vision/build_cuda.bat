@@ -1,9 +1,11 @@
 @echo off
 rem Scratch visnav, CUDA decide path. Same driver, compiled with PCHIE_SCRATCH_CUDA_VISNAV.
 rem Needs CUDA_PATH and the root Release pchie_core.lib. nvcc uses the labeled precision flags.
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
 set VIS=%~dp0
 set ROOT=%~dp0..
+where cl >nul 2>nul
+if errorlevel 1 call :vcvars
+if errorlevel 1 exit /b 1
 if "%CUDA_PATH%"=="" (
   echo CUDA_PATH is not set
   exit /b 1
@@ -22,3 +24,19 @@ cl /nologo /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS /DPCHIE_SCRATCH_CUDA_VIS
 set RC=%ERRORLEVEL%
 echo BUILD exit=%RC%
 exit /b %RC%
+
+:vcvars
+rem Find the newest Visual Studio with the C++ tools (Community, Professional, Enterprise, or Build Tools).
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" (
+  echo vswhere.exe not found. Install Visual Studio 2022 with the C++ tools, or run from a Developer Command Prompt.
+  exit /b 1
+)
+set "VSDIR="
+for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+if not defined VSDIR (
+  echo Visual Studio C++ tools not found. Run from a Developer Command Prompt.
+  exit /b 1
+)
+call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul
+exit /b %ERRORLEVEL%

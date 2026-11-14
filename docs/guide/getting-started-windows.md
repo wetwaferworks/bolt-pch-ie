@@ -25,7 +25,7 @@ cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
 
 If your Build Tools are Visual Studio 2026, use `-G "Visual Studio 18 2026"` instead. `cmake --help` lists the generators you have.
 
-The reasoning layer is part of this root build. The tools you will use first land in `build\Release\`, including `pchie_anchor.exe`, `pchie_tesla_watcher.exe`, `pchie_lk_pilot.exe`, `pchie_stageb_door_test.exe`, and `pchie_rl_l1l2_test.exe`. CUDA is controlled by `PCHIE_CUDA` and is on by default when a CUDA compiler is found.
+The reasoning layer is part of this root build. The tools you will use first land in `build\Release\`, including `pchie_anchor.exe`, `pchie_tesla_watcher.exe`, `pchie_lk_pilot.exe`, `pchie_lk_visnav.exe`, `pchie_neml.exe`, `pchie_stageb_door_test.exe`, and `pchie_rl_l1l2_test.exe`. CUDA is controlled by `PCHIE_CUDA` and is on by default when a CUDA compiler is found.
 
 ## Run the quick tests
 

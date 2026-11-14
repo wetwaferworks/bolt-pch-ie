@@ -28,7 +28,7 @@
 #include "pchie/PchStack.h"
 #include "pchie/Sha256.h"
 #include "pchie/rl/MazeL1.h"  // opt-in; official runners never call set_rl()
-#include "pchie/neml/NemlQuery.h"  // episodic memory: receipts at teardown, opt-in memory prior
+#include "pchie/neml/NemlQuery.h"  // episodic memory: receipts at teardown (on by default), memory prior via set_memory
 #include "pchie/neml/NemlTrack.h"
 #include "pchie/pchie_mcts.h"
 #include "pchie/pchie_tree.h"
@@ -208,7 +208,8 @@ class HeadlessMaze final {
   void set_neml_record(bool on) { neml_record_ = on; }            // per-maze off switch
   void set_neml_record_unit(bool on) { neml_record_unit_ = on; }  // tests: also record model-free fixture runs
   void set_neml_config(const neml::Config* c) { neml_cfg_ = c; }  // tests: a private ledger instead of the process one
-  // Memory prior (opt-in per run; official runners and golden tests never call this). Root and tree expansions at a
+  // Memory prior. The pilot and the reasoning-layer maze runs call this by default when the ledger is not empty
+  // (PCHIE_NEML_REASON=0 / --neml-reason off turns it off); official runners and golden tests never call it. Root and tree expansions at a
   // cell divide the prior of a move that led into a recorded dead end from that cell (this maze only), so a
   // remembered dead end is tried later. The snapshot is hashed into the chain at run start (provenance), so a
   // memory-informed run's hashes differ from an official run's by design. The snapshot must outlive the run.
@@ -1008,7 +1009,7 @@ class HeadlessMaze final {
   int tiptoe_checks_ = 0, tiptoe_crossings_ = 0, tiptoe_footing_ok_ = 0, tiptoe_footing_fail_ = 0;
   rl::LoopGuard lg_;  // loop guard v2, on by default (shared with Stage B and the L1/null decide path)
   StreamAuthFlags stream_auth_;  // TESLA + attestation, on by default
-  // NEML episodic memory: recording on by default (model runs), memory prior opt-in.
+  // NEML episodic memory: recording on by default (model runs); memory prior set by the caller (set_memory).
   bool neml_record_ = true, neml_record_unit_ = false;
   const neml::Config* neml_cfg_ = nullptr;
   neml::GridTracker neml_trk_;
