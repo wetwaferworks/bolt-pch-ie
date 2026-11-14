@@ -6,6 +6,7 @@ Since 13 November 2026, TESLA stream authentication and hardware attestation are
 
 - --tesla on|off (default on)
 - --attest on|off (default on)
+- --tesla-seed os|dev-insecure (default os; dev-insecure is the public, deterministic seed for unit work only)
 
 These sit beside --loop-guard on|off on the Stage B, RL, and LithoKraft pilot CLIs.
 
@@ -21,9 +22,11 @@ When attestation is on, a verdict is always computed and recorded. The in-proces
 
 The real measure / extend / quote round trip is a separate bench check on PCR 23 only (see the hardware attestation guide). Unit tests never extend a PCR.
 
-## Unit-test seeds
+## Seeds
 
-TESLA's secret seed in the maze drivers is derived from the maze seed (SHA-256(pchie.tesla.v1.derived-seed || u64be(seed))) so unit runs stay deterministic. A real run can install a CSPRNG seed via StreamAuthSession::set_secret_seed. The derived seed is a testing convenience, not a production secret.
+Since the hardening pass (see SECURITY.md), every run draws a fresh 32-byte TESLA secret from the operating system (BCryptGenRandom on Windows, getrandom on Linux). If the OS generator is not available, TESLA refuses to start and no stream is written. It does not fall back. The commitment therefore changes from run to run, and the official actions, chain head and h_world do not depend on it.
+
+The old seed, derived from the maze seed (SHA-256(pchie.tesla.v1.derived-seed || u64be(seed))), is public, so anyone could rebuild the key chain from it. It is only used with `--tesla-seed dev-insecure` (or `stream_auth_dev_insecure_seed()` in unit tests), and results record the seed kind (os-random, installed, dev-insecure). A seed installed through StreamAuthSession::set_secret_seed is refused if it is short, one repeated byte, or the derived value. Seeds are never written to disk.
 
 ## First TPM verdicts
 

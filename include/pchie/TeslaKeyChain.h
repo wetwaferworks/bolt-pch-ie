@@ -25,11 +25,16 @@
 namespace pchie {
 
 struct TeslaSchedule {
+  static constexpr uint32_t kMaxI = 1u << 16;
+  static constexpr uint32_t kMaxD = 1u << 10;
   uint32_t I = 8;  // sealed steps per interval
   uint32_t d = 2;  // disclosure lag, in intervals (RFC 4082: d = 1 does not work)
   void check() const {
     if (I == 0) throw std::invalid_argument("TESLA schedule: I must be at least 1");
     if (d < 2) throw std::invalid_argument("TESLA schedule: d must be at least 2");
+    // Upper bounds keep index arithmetic far from overflow when a schedule comes from an untrusted file.
+    if (I > kMaxI) throw std::invalid_argument("TESLA schedule: I is too large");
+    if (d > kMaxD) throw std::invalid_argument("TESLA schedule: d is too large");
   }
 };
 
@@ -97,8 +102,13 @@ class TeslaKeyChain {
   static bool key_belongs(const std::vector<uint8_t>& disclosed, uint32_t i, const std::vector<uint8_t>& commitment) {
     if (disclosed.size() != Sha256::kDigestBytes || commitment.size() != Sha256::kDigestBytes) return false;
     std::vector<uint8_t> x = disclosed;
-    for (uint32_t n = 0; n < i + 1; ++n) x = tesla_chain_step(x);
-    return x == commitment;
+    // 64-bit count: i = 0xFFFFFFFF must mean 2^32 steps, never wrap to zero steps (which would accept
+    // the public commitment itself as a key). Callers cap i before calling; see TeslaWatcher.
+    const uint64_t steps = uint64_t(i) + 1;
+    for (uint64_t n = 0; n < steps; ++n) x = tesla_chain_step(x);
+    const bool ok = x == commitment;
+    wipe_bytes(x);
+    return ok;
   }
   // Hash a later key back to an earlier one: K_j = F^{i-j}(K_i) for j < i.
   static std::vector<uint8_t> derive_earlier(const std::vector<uint8_t>& later_key, uint32_t later_i, uint32_t earlier_i) {

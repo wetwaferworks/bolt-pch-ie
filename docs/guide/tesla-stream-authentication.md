@@ -39,13 +39,19 @@ The stream is a text format with no wall-clock fields: a header that names `pchi
 
 ## Seeds
 
-In maze drivers, the secret seed used for unit runs is derived from the maze seed:
+By default the secret seed is 32 bytes from the operating system's random generator, drawn fresh for every run (BCryptGenRandom on Windows, getrandom on Linux). If that is not available, TESLA refuses to start and no stream is emitted; it never falls back to a weaker seed. Seeds are not saved or reused across runs, because keys disclosed in one run would let someone forge another run that reused the seed.
+
+For deterministic unit work only, `--tesla-seed dev-insecure` uses a seed derived from the maze seed:
 
 ```
 SHA-256("pchie.tesla.v1.derived-seed" || u64be(maze_seed))
 ```
 
-That derived seed is a testing convenience so unit runs stay deterministic. It is not a production secret. A real run can install a CSPRNG seed through the stream session. Interval-key seeds are secrets and are not committed to the repository.
+That value is public, so a stream made with it proves nothing. Results record which kind of seed was used. A seed installed through the stream session is refused if it is short, one repeated byte, or equal to the derived value.
+
+## Watcher limits
+
+The watcher treats a stream file as untrusted. A step index seen twice is flagged as a duplicate and the stream fails from that index on. Step and interval indices past the schedule limits (at most 4096 intervals by default, interval length at most 65536 and delay at most 1024), streams with more packets than the limit, and lines longer than 4096 bytes stop the watch with a flag (out-of-range or too-long) instead of making it do unbounded work.
 
 ## The watcher
 

@@ -3,16 +3,33 @@
 //
 // Usage: pchie_tesla_watcher <stream.txt>
 // Exit 0 only when the stream is authentic, every step 0..last is released, and there are no flags.
+// Exit 1 for a stream that does not verify, 2 for a file that cannot be read as a stream. Malformed or
+// oversized input fails with a message; the watcher's own limits bound memory and work.
 #include <cstdio>
+#include <exception>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include "pchie/TeslaWatcher.h"
 
 using namespace pchie;
 
-int main(int argc, char** argv) {
+static constexpr uintmax_t kMaxStreamBytes = 64ull << 20;  // far above an honest 4096-interval stream
+static constexpr size_t kMaxLineBytes = 4096;
+
+static int run(int argc, char** argv) {
   if (argc != 2) {
     std::fprintf(stderr, "usage: pchie_tesla_watcher <stream.txt>\n");
+    return 2;
+  }
+  std::error_code ec;
+  const uintmax_t size = std::filesystem::file_size(argv[1], ec);
+  if (ec) {
+    std::fprintf(stderr, "cannot open %s\n", argv[1]);
+    return 2;
+  }
+  if (size > kMaxStreamBytes) {
+    std::fprintf(stderr, "stream file is too large (%llu bytes)\n", (unsigned long long)size);
     return 2;
   }
   std::ifstream in(argv[1]);
@@ -34,11 +51,22 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "bad stream header\n");
     return 2;
   }
+  auto num = [](const std::string& v, uint32_t& out) {
+    if (v.empty() || v.size() > 9 || v.find_first_not_of("0123456789") != std::string::npos) return false;
+    out = uint32_t(std::stoul(v));
+    return true;
+  };
   TeslaSchedule sch;
-  sch.I = uint32_t(std::stoul(i_line.substr(2)));
-  sch.d = uint32_t(std::stoul(d_line.substr(2)));
+  if (!num(i_line.substr(2), sch.I) || !num(d_line.substr(2), sch.d)) {
+    std::fprintf(stderr, "bad stream header\n");
+    return 2;
+  }
   TeslaWatcher w(tesla_unhex(commitment_hex.substr(11)), sch);
   while (std::getline(in, line)) {
+    if (line.size() > kMaxLineBytes) {
+      std::fprintf(stderr, "stream line is too long\n");
+      return 2;
+    }
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.empty() || line[0] == '#') continue;
     if (line == "end-steps") w.note_end_of_steps();
@@ -61,4 +89,16 @@ int main(int argc, char** argv) {
   }
   std::printf("authentic=%s all_verified=%s\n", r.authentic ? "PASS" : "FAIL", r.all_verified ? "PASS" : "FAIL");
   return r.all_verified && r.authentic ? 0 : 1;
+}
+
+int main(int argc, char** argv) {
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "malformed stream: %s\n", e.what());
+    return 2;
+  } catch (...) {
+    std::fprintf(stderr, "malformed stream\n");
+    return 2;
+  }
 }

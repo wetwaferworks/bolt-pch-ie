@@ -10,13 +10,16 @@ add_library(pchie_core STATIC
   src/pchie_kv_pools.cpp src/pchie_gemma4.cpp src/pchie_mcts.cpp
   src/LogitStats.cpp src/LogProbLeafEvaluator.cpp src/TurnBoundaryTerminalPolicy.cpp
   src/FirstPlayUrgency.cpp src/RootNoise.cpp src/CommitSelector.cpp
-  src/Sha256.cpp
+  src/Sha256.cpp src/OsRandom.cpp
   src/GgufWeightsHash.cpp
   src/NemotronModel.cpp
   src/rl/RlFlags.cpp src/rl/LabelSchema.cpp
   src/rl/pchie_rl98_layers.cpp)
 target_include_directories(pchie_core PUBLIC include)
 target_link_libraries(pchie_core PUBLIC Threads::Threads)
+if(WIN32)
+  target_link_libraries(pchie_core PUBLIC bcrypt)  # OS random generator for TESLA seeds and signing keys
+endif()
 # Determinism: no FMA contraction, no fast-math.
 if(MSVC)
   target_compile_options(pchie_core PUBLIC $<$<COMPILE_LANGUAGE:CXX>:/fp:precise /arch:AVX2 /W4>)

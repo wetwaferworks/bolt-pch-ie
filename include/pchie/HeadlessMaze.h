@@ -81,7 +81,8 @@ struct MazeResult {
   std::vector<uint8_t> tesla_commitment;
   std::vector<uint8_t> tesla_commitment_id;
   uint64_t tesla_steps = 0;
-  std::string tesla_err;
+  std::string tesla_err;                  // set when TESLA refused to start (no secret seed) or stopped
+  TeslaSeedKind tesla_seed_kind = TeslaSeedKind::None;  // os-random by default; dev-insecure only on request
   bool attest_computed = false;
   AttestationStatus attest_status = AttestationStatus::Unattested;
   std::string attest_reason;

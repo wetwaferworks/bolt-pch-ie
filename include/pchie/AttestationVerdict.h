@@ -54,17 +54,23 @@ inline std::vector<uint8_t> measurement_set_hash(const MeasurementSet& m) {
   return Sha256::hash(b.data(), b.size());
 }
 
+// Every measured field is pinned, including the run's TESLA commitment: an approved entry names the one
+// stream (commitment) that was measured with it, so a quote over the same binary and weights but another
+// stream does not match.
 struct KnownGoodEntry {
   std::vector<uint8_t> binary_sha256, weights_sha256, config_sha256;
   std::string harness_version;
+  std::vector<uint8_t> tesla_commitment;  // 32 bytes
 };
 // Append-only in spirit. Tests push entries; nothing here edits or deletes one.
 struct KnownGoodRegistry {
   std::vector<KnownGoodEntry> entries;
   bool contains(const MeasurementSet& m) const {
+    if (m.tesla_commitment.size() != 32) return false;
     for (const auto& e : entries) {
       if (e.binary_sha256 == m.binary_sha256 && e.weights_sha256 == m.weights_sha256 &&
-          e.config_sha256 == m.config_sha256 && e.harness_version == m.harness_version)
+          e.config_sha256 == m.config_sha256 && e.harness_version == m.harness_version &&
+          e.tesla_commitment.size() == 32 && e.tesla_commitment == m.tesla_commitment)
         return true;
     }
     return false;

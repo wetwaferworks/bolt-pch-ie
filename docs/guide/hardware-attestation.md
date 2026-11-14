@@ -34,7 +34,7 @@ A measurement set is a structured hash of:
 
 The measurement-set hash is SHA-256 of a tagged encoding of those fields (the same layout the in-process code uses).
 
-The known-good registry is append-only. Only the maintainer adds an entry. Cortana cosigns. Existing entries are never edited or removed. Attested requires a valid fresh quote *and* a match in the registry. Without a quote the verdict is Unattested, even if the measurement is already in the list. A valid quote for a measurement that is not in the registry is Rejected.
+The known-good registry is append-only. Only the maintainer adds an entry. Cortana cosigns. Existing entries are never edited or removed. Attested requires a valid fresh quote *and* a match in the registry. Without a quote the verdict is Unattested, even if the measurement is already in the list. A valid quote for a measurement that is not in the registry is Rejected. The match covers every field, the TESLA commitment included. Since each run now draws a fresh TESLA secret (see [SECURITY.md](../../SECURITY.md)), an entry matches only the run whose commitment it records.
 
 The first registry entry was added on 13 November 2026 at 9:33 AM ET (America/New_York), after an explicit approval to add that build's measurement set. The measurement-set hash is `832819c2360b587b4f12b2bb72a6a3e9e2f3f2f4cc4de776766f474b1fb40820`. The entry hash is `2ae9e5fb28c3cf4fad0aed8a6f69edb2db99c9f3d2df234923a2fa89b3aea315`. The public record is `docs/notes/known-good-registry.jsonl`, with a short note in `docs/notes/known-good-registry.md`.
 

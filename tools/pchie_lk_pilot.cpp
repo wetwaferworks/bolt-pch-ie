@@ -131,6 +131,10 @@ static bool parse_args(int argc, char** argv, Args& a) {
       std::string v; if (!next(v) || (v != "on" && v != "off")) return false;
       a.stream_auth.tesla = v == "on";
     }
+    else if (k == "--tesla-seed") {  // os (default) or dev-insecure (forgeable maze-seed key chain, unit work only)
+      std::string v; if (!next(v) || (v != "os" && v != "dev-insecure")) return false;
+      a.stream_auth.tesla_dev_insecure_seed = v == "dev-insecure";
+    }
     else if (k == "--attest") {
       std::string v; if (!next(v) || (v != "on" && v != "off")) return false;
       a.stream_auth.attest = v == "on";
@@ -170,7 +174,8 @@ int main(int argc, char** argv) {
                  "       [--renderer vulkan|gl33|software] [--resolution WxH] [--frame-dump DIR] [--ffmpeg exe]\n"
                  "       [--grant auto|manual] [--grant-timeout s] [--hold-ms ms] [--input-template input.json]\n"
                  "       [--maze b1|stagea] [--no-vsync] [--settings settings.json]\n"
-                 "       [--neml on|off|DIR] [--neml-reason on|off]\n");
+                 "       [--neml on|off|DIR] [--neml-reason on|off]\n"
+                 "       [--tesla on|off] [--tesla-seed os|dev-insecure] [--attest on|off]\n");
     return 2;
   }
   fs::create_directories(a.out);
