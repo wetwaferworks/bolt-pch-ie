@@ -31,7 +31,7 @@ This folder holds the specifications the code follows: the outside standards it 
 | Transparency Anchoring for the PCHIE Hash Chain (Elfie's brief, 2026-11-12) | Implemented in `anchoring/`; see [anchoring/README.md](../../anchoring/README.md) and [Transparency anchoring](../guide/transparency-anchoring.md) | Anchor records, the log, witness cosigning, the fingerprint, ratchet-file checks. The brief's section numbers (s3.1 to s3.6) are cited in `pchie_anchor.h` |
 | Chain record wire format | `include/pchie/ChainRecord.h` | `kind:u32 \| payload_len:u32 \| payload`, little-endian; record kinds |
 | Seal chain generations | `include/pchie/ChainGeneration.h`, `include/pchie/RatchetHashChain.h`, [Seal chains](../guide/seal-chains.md) | `pchie.seal.v1-sha256` (default), `pchie.seal.v2-ratchet`, `pchie.seal.v2-ratchet-salted` |
-| TESLA adaptation | `include/pchie/TeslaKeyChain.h`, [TESLA stream authentication](../guide/tesla-stream-authentication.md) | `pchie.tesla.v1` tags, chain order as the clock, I = 8, d = 2 |
+| TESLA adaptation | `include/pchie/TeslaKeyChain.h`, [TESLA stream authentication](../guide/tesla-stream-authentication.md) | `pchie.tesla.v1` tags, chain order as the clock, I = 8, d = 2, OS-random seed by default (`--tesla-seed dev-insecure` for unit work) |
 | Anchoring text formats | `anchoring/src/pchie_anchor.h`, `anchoring/src/pchie_anchor.cpp` | STH line, `pchie.cosig.v1`, `pchie.witness_packet.v1`, fingerprint v1 and v2, witness policy files |
 | Known-good registry | [known-good-registry.md](../notes/known-good-registry.md) | Append-only reference values for attestation |
 | Stream-auth defaults | [stream-auth-defaults.md](../notes/stream-auth-defaults.md) | TESLA and attestation on by default, and the off flags |

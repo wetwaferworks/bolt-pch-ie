@@ -53,9 +53,11 @@ That value is public, so a stream made with it proves nothing. Results record wh
 
 The watcher treats a stream file as untrusted. A step index seen twice is flagged as a duplicate and the stream fails from that index on. Step and interval indices past the schedule limits (at most 4096 intervals by default, interval length at most 65536 and delay at most 1024), streams with more packets than the limit, and lines longer than 4096 bytes stop the watch with a flag (out-of-range or too-long) instead of making it do unbounded work.
 
+Each disclosed key is checked against the last key the watcher already trusts, or against the commitment when it trusts none yet, so a full-length stream costs linear hashing instead of quadratic. The key-chain check counts its steps in 64 bits, so interval 2^32-1 can no longer wrap to zero steps and accept the public commitment as its own key.
+
 ## The watcher
 
-`pchie_tesla_watcher` is a separate program from the runner. It reads a stream file and writes a verdict. It never consults a wall clock and never talks to a TPM. Exit status 0 means the stream is authentic, every step from 0 through the last is released, and there are no flags.
+`pchie_tesla_watcher` is a separate program from the runner. It reads a stream file and writes a verdict. It never consults a wall clock and never talks to a TPM. Exit status 0 means the stream is authentic, every step from 0 through the last is released, and there are no flags. Exit status 1 means the stream does not verify. Exit status 2 means the file cannot be read as a stream: it is missing, larger than 64 MiB, has a bad header, or has a line longer than 4096 bytes.
 
 Arrival order is the clock: a step packet is safe only if it arrived before its interval key was disclosed, in canonical stream order. The watcher treats a late packet as forged until proven otherwise, and late cannot be proven. Flags are:
 
@@ -63,10 +65,13 @@ Arrival order is the clock: a step packet is safe only if it arrived before its 
 |---|---|
 | late | The step packet arrived after its interval key was disclosed. |
 | bad-mac | The MAC did not verify. |
-| wrong-key | A disclosure does not hash to the commitment. Authenticity fails, full stop. |
+| wrong-key | A disclosure does not hash back to the last trusted key (or to the commitment). Authenticity fails, full stop. |
 | early-disclosure | A key arrived before its interval was due. |
 | gap | A step index is missing from the released stream. Missing steps are gaps, never smoothed over. |
 | bad-interval | The step's interval index is not `floor(step / I)`. |
+| duplicate | The same step index arrived more than once. The stream fails from that index on. |
+| out-of-range | A step or interval index is past the watcher's limits. The watch stops. |
+| too-long | The stream has more packets than the limits allow. The watch stops. |
 
 A bad MAC flags the stream at that step and no later step is released as verified. This layer is tamper evident, not tamper proof: a change is detectable, and a determined adversary who can both alter the stream and disclose keys early is outside what delayed disclosure can catch on its own.
 
@@ -79,3 +84,5 @@ The CTest `pchie_tesla_stream` drives the watcher as a separate process. That te
 ```
 
 `--tesla on` is accepted and is the default. The flag sits beside `--attest` and `--loop-guard` on the Stage B, reasoning-layer, and LithoKraft pilot command lines. With TESLA off, no stream is emitted and the official chain is unaffected.
+
+`--tesla-seed os` is the default: a fresh secret from the operating system on every run. `--tesla-seed dev-insecure` uses the public seed derived from the maze seed, for deterministic unit work only. Both sit on the same command lines as `--tesla`.

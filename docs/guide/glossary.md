@@ -28,7 +28,7 @@
 
 **Interval (`I`).** In TESLA, the number of sealed steps that share one interval key. The default is 8.
 
-**Known-good registry.** An append-only list of approved measurement sets. Only the maintainer adds an entry, and Cortana cosigns it. Entries are never edited or removed.
+**Known-good registry.** An append-only list of approved measurement sets. Only the maintainer adds an entry, and Cortana cosigns it. Entries are never edited or removed. An entry pins every measured field, the run's TESLA commitment included, so it matches only the run it records.
 
 **Label (Official, Provisional, Scratch).** The human truth label on a record. Official is frozen and accepted. Provisional is a reproducible candidate, not yet accepted. Scratch is exploratory evidence, never a claim. Labels move up only by a person's decision.
 
@@ -64,12 +64,14 @@
 
 **Tamper-evident.** A change is detectable when the chain, watcher, or verifier is run again. Not the same as tamper proof.
 
-**TESLA.** Timed Efficient Stream Loss-tolerant Authentication, RFC 4082, adapted here so the chain's own order is the clock. There is a MAC per step. Default schedule: 8 steps per interval, disclosure lag 2. `--tesla off` turns it off.
+**TESLA.** Timed Efficient Stream Loss-tolerant Authentication, RFC 4082, adapted here so the chain's own order is the clock. There is a MAC per step. Default schedule: 8 steps per interval, disclosure lag 2. `--tesla off` turns it off. Each run draws a fresh 32-byte secret seed from the operating system and refuses to start without one; `--tesla-seed dev-insecure` uses a public, deterministic seed for unit work only.
 
 **Trace.** LithoKraft's red and blue signal wiring. Strengths run 0 through 64.
 
 **Truth-valid.** A person has checked what the run claims. Tooling cannot confer this.
 
 **Via.** A LithoKraft vertical or side-lying insulated tube that carries Trace losslessly.
+
+**Witness log-key pin.** The log public key a witness accepts, set ahead of time with `pchie_anchor witness-trust` or on first contact. A packet under any other key is refused with `LOG KEY CHANGED`.
 
 **Witness policy.** A list of witness ids and a threshold for anchor-log cosigning. The defined three-way policy is the maintainer, Cortana, and Elfie, 3 of 3. The bench policy lists Elfie but does not require that role.

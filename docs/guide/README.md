@@ -17,7 +17,7 @@ Hashes quoted in this guide are provisional unless they belong to a frozen Offic
 - [Determinism and hashing](determinism-and-hashing.md) — Thread-count-independent results, provisional hashes, and the Official / Scratch / Provisional labels.
 - [Seal chains](seal-chains.md) — The default SHA-256 chain, the opt-in ratcheted chain, and genesis options.
 - [Transparency anchoring](transparency-anchoring.md) — The side log, fingerprints, and witness policies, including Elfie's defined role.
-- [TESLA stream authentication](tesla-stream-authentication.md) — The adapted TESLA stream, the watcher, and `--tesla off`.
+- [TESLA stream authentication](tesla-stream-authentication.md) — The adapted TESLA stream, its OS-random seed, the watcher and its limits, and `--tesla off`.
 - [Hardware attestation](hardware-attestation.md) — RATS roles, TPM 2.0, PCR 23, the known-good registry, and honest caveats, with `--attest off`.
 - [Reasoning layers and the loop guard](reasoning-layers.md) — Opt-in layers, loop guard v2, and what official runners do and do not enable.
 - [LithoKraft and LithoLattice](lithokraft-integration.md) — The vendored public snapshot, the MCP control connection, and the pilot.
@@ -25,6 +25,7 @@ Hashes quoted in this guide are provisional unless they belong to a frozen Offic
 - [Build and test](build-and-test.md) — CMake, the quick CTest set, and the long suites.
 - [Results so far](results.md) — Honest findings from the recorded runs, including where L1 did not separate from null.
 - [Limitations and threat model](limitations-and-threat-model.md) — What the harness claims, what it does not, and where the edges are.
+- [Security notes](../../SECURITY.md) — The status of the cryptography, the November 2026 hardening from our first security review, by Gizmo (ChatGPT Luna 6), and the known limits. The full list of changes is in the [changelog](../../CHANGELOG.md) and the [release notes](../../RELEASE-NOTES.md).
 - [Glossary](glossary.md) — Terms used throughout the guide.
 
 If you want to build and run first, start with the getting-started pages. Working notes, measurement reports, and design specs live under `docs/notes/`, `docs/reports/`, and `docs/specs/`.

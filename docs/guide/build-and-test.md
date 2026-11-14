@@ -13,6 +13,8 @@ cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
 
 CUDA is controlled by `PCHIE_CUDA` (on by default when a CUDA compiler is found). Without a CUDA compiler, the CUDA backend is skipped and the CPU path still builds. Sub-projects can also be built on their own: `anchoring/` and `vision/`. The root build already produces `pchie_anchor`, `pchie_tesla_watcher`, and `pchie_lk_pilot`.
 
+AVX2 is controlled by `PCHIE_AVX2`: `AUTO` (the default) builds the AVX2 kernels only when the compiler accepts the flag and the build machine runs AVX2 code, `ON` forces them, and `OFF` builds the portable kernels. CMake prints the choice (`PCHIE AVX2 kernels: ON` or `OFF`). Check the maze hashes on a build without AVX2 before comparing it with an AVX2 one.
+
 Launchers under `experiments/next-runs/`, and any test or tool that loads Little Nemo, take the model path from the environment: set `PCHIE_MODEL` to the GGUF weights file, or `PCHIE_MODELS` to the directory that contains `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`. There is no machine-specific default; a missing setting is an error. The Stage B unit section (`pchie_stageb_unit`) does not load the model and does not require these variables. Launchers write under `runs/` (gitignored) and do not touch official records.
 
 Older one-shot lab scripts under `experiments/` use the same model variables, plus roots such as `PCHIE_LAB`, `PCHIE_ENGINE_ROOT`, `PCHIE_WORKBENCH`, and `PCHIE_GAME` (or `LITHOKRAFT`) when they need a working tree or a LithoKraft executable. They fail clearly if a needed variable is unset. See `experiments/LAB_ENV.md`.
@@ -30,6 +32,8 @@ The thirteen names in that exclude list are the long suites recorded as "not che
 Most of those long suites use the official search, which does not move unless a walk enters a state four times. Any suite that did loop would now show a different, provisional value with the guard on. Compare with `--loop-guard off` before treating a moved hash as a regression.
 
 The TESLA stream test drives `pchie_tesla_watcher` as a separate process and never talks to a TPM. The anchor verifier test makes throwaway keys and logs under the build folder and removes them on a clean pass. In-process attestation tests use a simulated quote only.
+
+The security checks added in November 2026 are all in the quick set (see [SECURITY.md](../../SECURITY.md)). `pchie_gguf_validate` and `pchie_gemma4_load_validate` feed malformed GGUF files and models to the reader and the loader and check that each one is refused; neither needs the real model. `pchie_tesla_stream` also checks seed handling (weak, forged and missing seeds are refused, and an OS generator failure stops TESLA) and the watcher limits. `pchie_anchor_verifier` also checks log-key pinning, witness ids, and that concurrent signers never share a one-time leaf.
 
 ## What to compare
 

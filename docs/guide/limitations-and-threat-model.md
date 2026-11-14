@@ -11,6 +11,7 @@ PCHIE is a safety-first research harness. It is deterministic and tamper-evident
 - A later ratcheted-chain state cannot be run backward to an earlier one without inverting SHA-256.
 - A TESLA watcher flags late packets, bad MACs, wrong keys, early disclosures, gaps, and bad interval indexes. Late cannot be proven honest. A wrong-key disclosure fails authenticity, full stop.
 - Attested requires a valid fresh quote and a known-good registry match. Without a quote the verdict is Unattested, never a faked Attested.
+- Untrusted inputs are bounded. The TESLA watcher caps indices, stream length and line length, and the GGUF reader and model loader refuse a malformed file before reading past a buffer.
 - Anchoring is a local Merkle log with signed tree heads and witness cosignatures. It does not publish itself. Outgoing witness packets carry tree heads and consistency proofs only, not records, chains, run ids, or weights.
 
 ## What it does not claim
@@ -34,9 +35,17 @@ The TESLA watcher and the anchor verifier are written against a short list of in
 - **Replay of a quote**: a nonce mismatch is Rejected.
 - **Stream forgery after disclosure**: a step that arrives after its interval key is public is flagged late and is not released as verified.
 - **Missing or reordered steps**: gaps are flagged, never smoothed over. Steps must be emitted in canonical order.
+- **Duplicate or flooding streams**: a repeated step index is flagged as a duplicate, and out-of-range indices or oversized streams stop the watch (`pchie_tesla_stream`).
+- **A forgeable TESLA seed**: weak, predictable and missing seeds are refused, and TESLA stops rather than fall back (`pchie_tesla_stream`).
+- **Log-key substitution**: a packet signed under a key other than the one a witness pinned is refused with `LOG KEY CHANGED` (`pchie_anchor_verifier`).
+- **One-time leaf reuse**: concurrent signers never share a leaf, and an exhausted key refuses (`pchie_anchor_verifier`).
+- **Malformed models**: bad GGUF headers, shapes, offsets and token ids are refused at load (`pchie_gguf_validate`, `pchie_gemma4_load_validate`).
 
 ## Threats that remain open or out of scope
 
+- The TESLA, one-time signature, and witness cosigning code is in-house, research-grade cryptography that no one has independently reviewed. Our first security review, by Gizmo (ChatGPT Luna 6), led to the fixes listed in [SECURITY.md](../../SECURITY.md), but that is not a full audit.
+- A witness that pins the log key on first contact trusts whatever key it sees first. Pinning the key ahead of time with `pchie_anchor witness-trust` closes that gap.
+- Wiping secrets from memory is best effort. The compiler, the operating system, and swap can still hold copies.
 - An adversary who can replace the watcher, the verifier binary, or the known-good registry, or who holds a signing key that was supposed to stay in custody, is not stopped by the log format alone. Key custody is a human decision.
 - TESLA does not, by itself, stop an adversary who can both alter packets and disclose keys early; early disclosure is flagged, but the layer is still only tamper evident.
 - In-process attestation uses a simulated HMAC quote and never talks to the TPM. A unit-test Attested verdict is not a hardware Attested verdict.

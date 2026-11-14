@@ -4,8 +4,9 @@ This is a side log. It reads finished-run artifacts and never feeds a run. Ancho
 Background reading is in `docs/notes/anchoring-references.md` and in the [Transparency anchoring](../docs/guide/transparency-anchoring.md) guide.
 
 - `policy/` holds the witness policies (see below).
-- `src/` holds `pchie_anchor.h` and `pchie_anchor.cpp`: anchor records, the Merkle log (RFC 9162 hashing), signed tree heads, proofs, witness cosigning, the fingerprint, and the verifier. It uses the core `pchie::Sha256` and `include/pchie/HmacSha256.h`. Ratcheted chain files (generation `pchie.seal.v2-ratchet`, from `include/pchie/RatchetHashChain.h`) are verified here too.
+- `src/` holds `pchie_anchor.h`, `pchie_anchor.cpp`, and `pchie_anchor_fs.h`/`.cpp` (crash-safe writes and the signing lock): anchor records, the Merkle log (RFC 9162 hashing), signed tree heads, proofs, witness cosigning, the fingerprint, and the verifier. It uses the core `pchie::Sha256` and `include/pchie/HmacSha256.h`. Ratcheted chain files (generation `pchie.seal.v2-ratchet`, from `include/pchie/RatchetHashChain.h`) are verified here too.
 - `tests/` holds `anchor_unit.cpp` (87 checks) and `anchor_verifier_test.cpp` (log, witness, policy, and verifier checks end to end with throwaway keys). Both run under CTest as `pchie_anchor_unit` and `pchie_anchor_verifier`.
+- Signing takes an exclusive lock on the key and reserves the next one-time leaf durably before a signature is released, so a leaf is never used twice. An exhausted key refuses to sign. See [SECURITY.md](../SECURITY.md).
 - `log/` is the anchor log (`anchors.log`, `sth/`, `cosigs/`, `witness_registry.txt`, `keys/`). It is gitignored. `keys/signing.key` is secret; keep it on the machine that holds the log.
 - `witness/` holds local witness keys (secret, gitignored).
 - `witness_out/` holds packets for a witness: signed tree heads and consistency proofs only, with no records, chains, run ids, or weights. Nothing is sent from here automatically.

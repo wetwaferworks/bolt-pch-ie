@@ -7,7 +7,7 @@
 //   pchie_rl_l1l2_test.exe --unit                     no model: fidelity, poison control, L2, sealed-tuple, guards
 //   pchie_rl_l1l2_test.exe --bench                    forward timing on Little Nemo (CPU)
 //   pchie_rl_l1l2_test.exe --maze b1|stagea|stageb [--rl-...] [--poison] [--steps N] [--budget N] [--label X]
-//                          [--root DIR] [--workers N (default: all threads)] [--mem DIR/scratch/rl/mem/F.jsonl] [--loop-guard on|off] [--tesla on|off] [--attest on|off]
+//                          [--root DIR] [--workers N (default: all threads)] [--mem DIR/scratch/rl/mem/F.jsonl] [--loop-guard on|off] [--tesla on|off] [--tesla-seed os|dev-insecure] [--attest on|off]
 //                                                     loop guard v2 is on by default; off gives the old default walk
 //                                                     one decide-only run; prints an [RLON] token line
 //   pchie_rl_l1l2_test.exe --compare-l1 L1.log NULL.log ORACLE.log      planner comparison verdict (exit 0 / 10 stop and report / 2 invalid)

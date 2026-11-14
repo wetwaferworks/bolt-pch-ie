@@ -40,7 +40,7 @@ flowchart TB
   end
 ```
 
-- **Inference and search.** The core loads a GGUF model (Little Nemo in the recorded runs), runs kernels with precise floating-point settings, and searches with PUCT. Ties break by lowest token id. Official search can mix in a distance oracle; the opt-in model-driven path does not, and is described in [Reasoning layers](reasoning-layers.md).
+- **Inference and search.** The core loads a GGUF model (Little Nemo in the recorded runs), runs kernels with precise floating-point settings, and searches with PUCT. The GGUF reader and the model loader treat the file as untrusted and refuse a malformed one at load time. Ties break by lowest token id. Official search can mix in a distance oracle; the opt-in model-driven path does not, and is described in [Reasoning layers](reasoning-layers.md).
 - **Personal-control gate.** Legal-move masking and the PCH gate stay in force on every path. A gate-rejected edge is not a candidate. Fail closed is the rule throughout: a bad or unknown input is refused, not papered over.
 - **Maze fixtures.** B1 is a 16x16 headless grid (official search uses seed 1). Stage B is a puzzle-maze with doors that ask a Dividor question. Stage A appears as a larger pit-maze fixture and as an in-engine LithoKraft testbed. Drivers include `HeadlessMaze` (B1 and Stage A) and `StageBDoorMaze`.
 - **Coordinator and seal chain.** Only the coordinator appends, in canonical step order, never in worker completion order. The default chain is SHA-256 generation `pchie.seal.v1-sha256`. A ratcheted generation exists and is off unless a caller asks for it. See [Seal chains](seal-chains.md).

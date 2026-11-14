@@ -58,7 +58,7 @@ All the crypto here is written in-house on one SHA-256. Nothing imports OpenSSL,
 ### RFC 8554, Leighton-Micali Hash-Based Signatures (LMS / LM-OTS), as a model
 - **What it is.** A stateful hash-based signature scheme: one-time Winternitz signatures under a Merkle tree of public keys.
 - **What it does.** It signs with nothing but a hash function, so it needs no elliptic curves. Each one-time key must never be used twice.
-- **Where.** `Hbs`, `HbsKey`, and `hbs_verify` in `anchoring/src/pchie_anchor.h`, using SHA-256 with n=32, w=4, p=67, ls=4, and h=10, which gives 1024 signatures per key. `sign_persist` in `anchoring/src/pchie_anchor.cpp` saves the key state after every signature.
+- **Where.** `Hbs`, `HbsKey`, and `hbs_verify` in `anchoring/src/pchie_anchor.h`, using SHA-256 with n=32, w=4, p=67, ls=4, and h=10, which gives 1024 signatures per key. `sign_persist` in `anchoring/src/pchie_anchor.cpp` takes an exclusive lock on the key, reserves the next leaf index durably before it releases a signature, and refuses once every leaf is used. The crash-safe writes and the lock are in `anchoring/src/pchie_anchor_fs.cpp`. Keys come from the operating system's random generator.
 - **What we use it for.** Signing the log's tree heads and the witness cosignatures. The code models RFC 8554 but is **not** claimed to interoperate with it.
 
 ### RFC 3339, Date and Time on the Internet: Timestamps
@@ -80,7 +80,7 @@ All the crypto here is written in-house on one SHA-256. Nothing imports OpenSSL,
   - session wiring `StreamAuthSession` (`include/pchie/StreamAuth.h`);
   - the `pchie_tesla_watcher` tool;
   - tests in `tests/pchie_tesla_stream_test.cpp`.
-- **What we change.** The chain's own step order is the clock, so the safety test never reads a wall clock. The defaults are 8 sealed steps per interval with a disclosure lag of 2. As RFC 4082 warns, a lag of 1 is refused.
+- **What we change.** The chain's own step order is the clock, so the safety test never reads a wall clock. The defaults are 8 sealed steps per interval with a disclosure lag of 2. As RFC 4082 warns, a lag of 1 is refused. Each run's secret seed comes from the operating system's random generator, and TESLA refuses to start without one; `--tesla-seed dev-insecure` keeps a public, deterministic seed for unit work. The watcher bounds its input and checks each disclosed key against the last key it already trusts, as in RFC 4082 section 3.5, so a long stream costs linear hashing.
 - **What we use it for.** Authenticating the live stream of sealed maze steps. It is on by default in the maze drivers and turned off with `--tesla off`. The official seals are unchanged either way. See [TESLA stream authentication](../guide/tesla-stream-authentication.md).
 
 ### RFC 9334, Remote ATtestation procedureS (RATS) Architecture
@@ -126,7 +126,7 @@ All the crypto here is written in-house on one SHA-256. Nothing imports OpenSSL,
 
 ### GGUF version 3 and the GGML block quantization layouts (ggml project documentation; not an RFC)
 - **Where.**
-  - A clean-room, read-only reader `GgufFile` (`include/pchie/pchie_gguf.h`, `src/pchie_gguf.cpp`), which refuses any version other than 3.
+  - A clean-room, read-only reader `GgufFile` (`include/pchie/pchie_gguf.h`, `src/pchie_gguf.cpp`), which refuses any version other than 3. It checks every count, length, alignment, tensor shape, offset and byte extent against the file size before it allocates anything or forms a pointer. The Gemma 4 loader then checks that every weight has the shape and type the forward pass expects and that token ids are inside the vocabulary.
   - The Q4_K, Q6_K, Q8_0, and Q8_K block structs and deterministic integer kernels in `include/pchie/pchie_kquants_det.h`, matched by the CUDA kernels in `src/pchie_cuda.cu`.
 - **What we use it for.** Loading Little Nemo's weights and running exact, bit-reproducible inference.
 
@@ -154,7 +154,7 @@ All the crypto here is written in-house on one SHA-256. Nothing imports OpenSSL,
 These shaped the design. Only the parts listed are implemented. Details and links are in [anchoring references](../notes/anchoring-references.md).
 
 - **Signal, The Double Ratchet Algorithm (revision 4).** We take its symmetric-key KDF chain: per-step keys from HMAC with constant inputs 0x01 and 0x02, and old keys wiped. That becomes `RatchetHashChain` (`pchie.seal.v2-ratchet`). There is no Diffie-Hellman ratchet and no encryption. It has no RFC number, so never cite one for it.
-- **Sigsum witness cosigning, now C2SP tlog-witness and tlog-cosignature.** We take the witness rules: a witness keeps the last head it cosigned, checks consistency before cosigning, and never cosigns a smaller tree. This is `witness_cosign` and `check_policy` in `anchoring/src/pchie_anchor.cpp`. Exchange is files only. We don't use the signed-note format, Ed25519, or ML-DSA.
+- **Sigsum witness cosigning, now C2SP tlog-witness and tlog-cosignature.** We take the witness rules: a witness keeps the last head it cosigned, checks consistency before cosigning, and never cosigns a smaller tree. A witness also pins the log's public key, ahead of time with `witness-trust` or on first contact, and refuses any other key. This is `witness_cosign` and `check_policy` in `anchoring/src/pchie_anchor.cpp`. Exchange is files only. We don't use the signed-note format, Ed25519, or ML-DSA.
 - **Signal safety numbers.** We take the shape: 60 digits in groups of 5, from two halves of 5200-round iterated SHA-256. This is `fingerprint` and `fingerprint_for` in `anchoring/src/pchie_anchor.h`.
 
 ## Mentioned in the docs but not implemented in the harness code

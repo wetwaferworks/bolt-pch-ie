@@ -72,7 +72,7 @@ If you want to walk a LithoKraft maze with the pilot, you also need a game build
 ## Common errors
 
 - **`cmake: command not found`, or the version is older than 3.24.** Install a current CMake and make sure the `cmake` on your PATH is that one (`cmake --version`).
-- **The compiler does not accept `-mavx2`, or the process dies with an illegal instruction.** The harness requires AVX2. Install a compiler that can target it, and run on a machine that supports it.
+- **The compiler does not accept `-mavx2`, or the process dies with an illegal instruction.** Reconfigure with the default `-DPCHIE_AVX2=AUTO`, which turns AVX2 on only when both the compiler and this machine support it, or with `-DPCHIE_AVX2=OFF` to build the portable kernels. Check the maze hashes on a build without AVX2 before comparing it with an AVX2 one.
 - **A quick test fails with a missing model.** Set `PCHIE_MODEL` or `PCHIE_MODELS` as above. `pchie_stageb_unit` must still pass without those variables; if it asks for a model, stop and report it.
 - **CTest looks in the wrong directory, or you passed `-C Release` and nothing ran.** This is a single-configuration build. Run `ctest` from the `build/` directory without `-C`.
 - **CUDA is missing.** That is fine. The CUDA backend is skipped and the CPU path still builds. You only need CUDA 12 if you asked for that backend.

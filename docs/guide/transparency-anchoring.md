@@ -12,6 +12,8 @@ The log is a Merkle tree in the manner of RFC 9162, with signed tree heads and i
 
 Signatures on tree heads use a stateful hash-based scheme modeled on RFC 8554 (LMS/LM-OTS, SHA-256, n=32, w=4, h=10). The implementation is not claimed to be interoperable with RFC 8554.
 
+A one-time leaf is never used twice. Every signer takes an exclusive lock on the key that all processes honor, and reserves the next leaf index durably (a unique temp file, flushed, then an atomic rename) before it releases a signature. A crash after the reservation wastes one leaf; it never hands the same leaf out twice. Once all 1024 leaves are used, the key refuses to sign and its file is left unchanged. Signing keys come from the operating system's random generator, and seeds and key buffers are wiped after use (best effort). See [SECURITY.md](../../SECURITY.md) for the status of this code: it is research-grade and has not been independently reviewed.
+
 Typical emit, once a run has finished:
 
 ```
@@ -48,6 +50,18 @@ Elfie is a defined witness role in both policies. This guide names that role and
 Outgoing packets in `witness_out/` are signed tree heads and consistency proofs only. They do not include records, chains, run ids, or weights. Incoming cosignatures land in `witness_in/` and are taken in with `pchie_anchor intake`.
 
 In the bench policy, the maintainer's cosigner role is played by a local machine (`jd-local`), and Cortana is the producer witness.
+
+## Pinning the log key
+
+A witness pins the public key of the log it cosigns for. The safest way is to pin it ahead of time:
+
+```
+pchie_anchor witness-trust <witness_dir> <log_pub_hex>
+```
+
+Without that step, the key is pinned on first contact, from the first packet the witness accepts. After that, a packet signed under any other key is refused with `LOG KEY CHANGED`, and a packet for a different log id is refused with `LOG ID CHANGED`. Pinning on first contact trusts whatever key the witness sees first, so set the pin ahead of time when you can.
+
+Witness ids name files, so they are limited to letters, digits, `.`, `_` and `-`, 1 to 64 characters, with no leading dot or dash and no `..`.
 
 ## What anchoring does not do
 

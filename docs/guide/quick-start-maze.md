@@ -23,7 +23,7 @@ The hash must match the line for that file in `SHA256SUMS`. Unpack the zip anywh
 ## 2. Prerequisites
 
 - **Windows 10 or 11, x64.**
-- **A CPU with AVX2.** The release is built with `/arch:AVX2`. On a CPU without AVX2 the programs stop with an illegal-instruction error.
+- **A CPU with AVX2.** The release is built with `/arch:AVX2`. On a CPU without AVX2 the programs stop with an illegal-instruction error. A build from source can leave AVX2 out with `-DPCHIE_AVX2=OFF`; see [Build and test](build-and-test.md).
 - **The Microsoft Visual C++ 2015-2022 x64 redistributable** (`vc_redist.x64.exe` from Microsoft). The harness programs use the shared C++ runtime.
 - **The model file.** The weights are not in the release. Little Nemo is `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf` (NVIDIA Nemotron 3.5 Bolt E4B, Q4_K_M). Put it anywhere and point the harness at it, for this session only:
 
@@ -89,7 +89,7 @@ Each test line ends in `PASS` or `FAIL`, and each program ends with a summary an
 - **Change the maze.** `pchie_rl_l1l2_test.exe --maze b1|stagea|stageb` picks the fixture. The vision driver takes `--b1-seed N` and `--b1-size N` for other seeded grids (defaults 1 and 16).
 - **Turn reasoning layers on.** `pchie_rl_l1l2_test.exe` accepts the `--rl-...` flags: `--rl-puct-prior`, `--rl-puct-value`, `--rl-puct-model`, `--rl-qbp` (query before plan), `--rl-options`, `--rl-belief`, `--rl-verifier`, `--rl-fork-score`, `--rl-symbolic-peer`, and others. They are opt-in and off by default. `--steps N`, `--budget N`, `--workers N`, and `--label X` set the run length, the search budget, the thread count, and a label for the log. See [Reasoning layers and the loop guard](reasoning-layers.md).
 - **Loop guard.** Loop guard v2 is on by default. `--loop-guard off` gives the old default walk for comparison.
-- **Stream authentication and attestation.** `--tesla on|off` and `--attest on|off` on the pilot and the reasoning-layer harness. See [TESLA stream authentication](tesla-stream-authentication.md) and [Hardware attestation](hardware-attestation.md).
+- **Stream authentication and attestation.** `--tesla on|off` and `--attest on|off` on the pilot and the reasoning-layer harness. Builds from source after v0.1.0 draw a fresh TESLA secret from the operating system on every run and also take `--tesla-seed os|dev-insecure`; `dev-insecure` is a public, deterministic seed for unit work only. See [SECURITY.md](../../SECURITY.md). See [TESLA stream authentication](tesla-stream-authentication.md) and [Hardware attestation](hardware-attestation.md).
 - **Seal a run into the transparency log.** `pchie_anchor.exe` emits, verifies, and cosigns anchor records; `pchie_anchor verify <log> --anchor-index i --chain-file <side log> --fingerprint "<digits>"` prints PASS or FAIL for each check. See [Transparency anchoring](transparency-anchoring.md).
 - **Watch a stream.** `pchie_tesla_watcher.exe` checks a TESLA stream as it is written.
 - **Run it in the game.** `pchie_lk_pilot.exe --out run1 --game <path>\LithoKraft.exe` decides the maze, starts LithoKraft, checks that the world equals the decided grid, and walks the committed moves with the player's own input. `--maze stagea` uses the 64 by 64 fixture; `--unit` uses the null-model driver. See [Playing LithoKraft](playing-lithokraft.md#the-harness-in-the-game).

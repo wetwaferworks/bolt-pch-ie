@@ -72,7 +72,7 @@ If you want to walk a LithoKraft maze with the pilot, you also need a game build
 - **The generator does not match the installed Visual Studio.** If `"Visual Studio 17 2022"` is rejected, try `"Visual Studio 18 2026"`, or run `cmake --help` and pick a listed Visual Studio generator. Keep `-A x64`.
 - **A quick test fails with a missing model.** Set `PCHIE_MODEL` or `PCHIE_MODELS` as above. `pchie_stageb_unit` must still pass without those variables; if it asks for a model, stop and report it.
 - **`ctest` cannot find the tests, or it runs a Debug binary.** Configure and build Release, then pass `-C Release`. Do not mix a Debug build with the Release test configuration.
-- **The compiler rejects AVX2, or the process crashes on an older CPU.** The harness requires AVX2. Build and run on a machine that supports it.
+- **The compiler rejects AVX2, or the process crashes on an older CPU.** Reconfigure with the default `-DPCHIE_AVX2=AUTO`, which turns AVX2 on only when both the compiler and this machine support it, or with `-DPCHIE_AVX2=OFF` to build the portable kernels. Check the maze hashes on a build without AVX2 before comparing it with an AVX2 one.
 - **CUDA is missing.** That is fine. The CUDA backend is skipped and the CPU path still builds. You only need CUDA 12 if you asked for that backend.
 - **A launcher says the Release executable is missing.** Build Release first. The next-runs scripts look for `build\Release\pchie_rl_l1l2_test.exe` and `build\Release\pchie_stageb_door_test.exe`.
 - **A launcher refuses to start because a log already exists.** It will not overwrite a previous label. Use a fresh output folder, or move the old log aside.
