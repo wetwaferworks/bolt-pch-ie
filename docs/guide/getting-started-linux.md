@@ -6,7 +6,7 @@ This page is a first walk through a Release build of Bolt PCHIE on Linux. It sta
 
 - A 64-bit Linux system with Git, CMake 3.24 or newer, and a C++17 compiler (GCC or Clang)
 - Make or Ninja
-- A CPU that supports AVX2 (the harness is built with `-mavx2`)
+- A CPU that supports AVX2 (by default `-DPCHIE_AVX2=AUTO` builds the AVX2 kernels with `-mavx2` when the compiler and this machine support it; `-DPCHIE_AVX2=OFF` builds the portable kernels)
 - The usual C++ build tools (`g++`, `make`, and a pthread-capable C library). The root CMake only requires the Threads package beyond the compiler
 - Optional: CUDA 12, only if you want the CUDA backend. Without a CUDA compiler the CPU path still builds
 - Optional, for a first run that loads the model: the Little Nemo GGUF weights file `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`. The weights are not in this repository

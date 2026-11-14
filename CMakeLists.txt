@@ -20,11 +20,64 @@ target_link_libraries(pchie_core PUBLIC Threads::Threads)
 if(WIN32)
   target_link_libraries(pchie_core PUBLIC bcrypt)  # OS random generator for TESLA seeds and signing keys
 endif()
+
+# AVX2 kernels. AUTO (the default) turns them on only when the compiler accepts the flag and the build
+# machine's CPU runs AVX2 code; ON and OFF force the choice. Without AVX2 the kernels take their portable
+# scalar path; check the maze hashes on such a build before comparing it with an AVX2 one.
+set(PCHIE_AVX2 AUTO CACHE STRING "Build the AVX2 kernels: AUTO, ON or OFF")
+set_property(CACHE PCHIE_AVX2 PROPERTY STRINGS AUTO ON OFF)
+if(MSVC)
+  set(_pchie_avx2_flag /arch:AVX2)
+else()
+  set(_pchie_avx2_flag -mavx2)
+endif()
+set(_pchie_use_avx2 OFF)
+if(PCHIE_AVX2 STREQUAL "ON")
+  set(_pchie_use_avx2 ON)
+elseif(PCHIE_AVX2 STREQUAL "AUTO")
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(${_pchie_avx2_flag} PCHIE_COMPILER_HAS_AVX2)
+  if(PCHIE_COMPILER_HAS_AVX2 AND NOT CMAKE_CROSSCOMPILING)
+    set(_pchie_probe ${CMAKE_CURRENT_BINARY_DIR}/pchie_avx2_probe.cpp)
+    file(WRITE ${_pchie_probe} [=[
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+static bool os_and_cpu_avx2() {
+  int r[4]; __cpuid(r, 0); if (r[0] < 7) return false;
+  __cpuid(r, 1); const bool osxsave = (r[2] & (1 << 27)) != 0, avx = (r[2] & (1 << 28)) != 0;
+  if (!osxsave || !avx || (_xgetbv(0) & 6) != 6) return false;
+  __cpuidex(r, 7, 0); return (r[1] & (1 << 5)) != 0;
+}
+#else
+static bool os_and_cpu_avx2() { __builtin_cpu_init(); return __builtin_cpu_supports("avx2"); }
+#endif
+int main() {
+  if (!os_and_cpu_avx2()) return 1;
+  volatile int a = 3; __m256i v = _mm256_set1_epi32(a); v = _mm256_add_epi32(v, v);
+  return _mm256_extract_epi32(v, 0) == 6 ? 0 : 1;
+}
+]=])
+    try_run(_pchie_avx2_run _pchie_avx2_compile ${CMAKE_CURRENT_BINARY_DIR}/pchie_avx2_probe ${_pchie_probe}
+            COMPILE_DEFINITIONS ${_pchie_avx2_flag})
+    if(_pchie_avx2_compile AND "${_pchie_avx2_run}" STREQUAL "0")
+      set(_pchie_use_avx2 ON)
+    endif()
+  endif()
+elseif(NOT PCHIE_AVX2 STREQUAL "OFF")
+  message(FATAL_ERROR "PCHIE_AVX2 must be AUTO, ON or OFF")
+endif()
+message(STATUS "PCHIE AVX2 kernels: ${_pchie_use_avx2} (PCHIE_AVX2=${PCHIE_AVX2})")
+if(_pchie_use_avx2)
+  set(_pchie_arch_opt ${_pchie_avx2_flag})
+else()
+  set(_pchie_arch_opt "")
+endif()
 # Determinism: no FMA contraction, no fast-math.
 if(MSVC)
-  target_compile_options(pchie_core PUBLIC $<$<COMPILE_LANGUAGE:CXX>:/fp:precise /arch:AVX2 /W4>)
+  target_compile_options(pchie_core PUBLIC $<$<COMPILE_LANGUAGE:CXX>:/fp:precise ${_pchie_arch_opt} /W4>)
 else()
-  target_compile_options(pchie_core PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off -fno-fast-math -mavx2 -Wall -Wextra>)
+  target_compile_options(pchie_core PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off -fno-fast-math ${_pchie_arch_opt} -Wall -Wextra>)
 endif()
 
 enable_testing()

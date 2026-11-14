@@ -8,7 +8,7 @@ This page is a first walk through a Release build of Bolt PCHIE on Windows. It s
 - Git
 - CMake 3.24 or newer
 - Visual Studio 2022 Build Tools or later, with the Desktop development with C++ workload. The Visual Studio 17 2022 and Visual Studio 18 2026 generators both work. CMake may arrive as part of those tools; if `cmake` is not on your PATH, use the CMake that ships with Visual Studio, or open an "x64 Native Tools" developer command prompt
-- A CPU that supports AVX2 (the harness is built with `/arch:AVX2`)
+- A CPU that supports AVX2 (by default `-DPCHIE_AVX2=AUTO` builds the AVX2 kernels with `/arch:AVX2` when the compiler and this machine support it; `-DPCHIE_AVX2=OFF` builds the portable kernels)
 - Optional: CUDA 12, only if you want the CUDA backend. Without a CUDA compiler the CPU path still builds
 - Optional, for a first run that loads the model: the Little Nemo GGUF weights file `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`. The weights are not in this repository
 

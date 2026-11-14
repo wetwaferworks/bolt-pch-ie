@@ -70,6 +70,7 @@ A researcher-facing guide lives under [`docs/guide/`](docs/guide/README.md). It 
 - [Build and test](docs/guide/build-and-test.md)
 - [Results so far](docs/guide/results.md)
 - [Limitations and threat model](docs/guide/limitations-and-threat-model.md)
+- [Security notes](SECURITY.md) — TESLA and witness cosigning are research-grade, in-house crypto that has not been independently reviewed; the anchor is file-based, not networked
 - [Glossary](docs/guide/glossary.md)
 
 ## Repository map
