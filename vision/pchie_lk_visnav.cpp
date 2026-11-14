@@ -38,7 +38,7 @@
 //   * a ranged interaction (2+ blocks) is audited before any attack: a wall target stops the run INVALID (as before);
 //     a target whose blocks are not the chosen object (not a key / not a door) is REFUSED (no attack sent), counted, and
 //     that ranged leaf is dropped from this cell/direction (own memory, like way-shut) so it can walk closer instead.
-// One driver. --way-shut, --reach, --act-blank, and --neml default off. --b1-seed 1, --b1-size 16,
+// One driver. --way-shut, --reach, --act-blank, and --neml-inject default off; NEML recording is on (--neml off). --b1-seed 1, --b1-size 16,
 // and --game-res 640x360 are the nav2 defaults. The CUDA decide path is a separate compile
 // (PCHIE_SCRATCH_CUDA_VISNAV). With the opt-in flags off, the decision path is the reach-off path.
 #define NOMINMAX
@@ -55,7 +55,7 @@
 #ifdef PCHIE_SCRATCH_CUDA_VISNAV
 #include "cuda/CudaNemotronModel.h"  // Scratch labeled CUDA IModel adapter
 #endif
-#include "neml/NemlLedger.h"  // Scratch NEML (opt-in --neml DIR)
+#include "pchie/neml/NemlStore.h"  // episodic memory: a receipt per nav run (on by default; --neml off)
 #include <ctime>
 #include "pchie/Sha256.h"
 #include "pchie/UntrustedText.h"
@@ -523,8 +523,7 @@ struct Args {
   std::string enc, offline_dir, settings, input_template, maze = "b1";
   int max_dec = 120, ctx = 1024, cap_w = 320, cap_h = 180, workers = 8, max_minutes = 100;
   std::string game_res = "640x360";  // Scratch: game window resolution (capture size stays cap_w x cap_h)
-  std::string neml;          // SCRATCH NEML ledger dir (empty = off, default)
-  bool neml_inject = false;  // SCRATCH NEML: prepend the digest to the trusted rules prime (off by default; not approved for runs)
+  bool neml_inject = false;  // NEML: prepend the memory block to the trusted rules prime (off by default; not approved for runs)
   double look_pitch = -0.75, prior_w = 0.2;
   bool blank = true;
   bool way_shut = false;   // scratch loop-breaker (opt-in)
@@ -553,7 +552,7 @@ static bool parse_args(int argc, char** argv, Args& a) {
     else if (k == "--max-minutes") { if (!nexti(a.max_minutes)) return false; }
     else if (k == "--ctx") { if (!nexti(a.ctx)) return false; }
     else if (k == "--game-res") { if (!next(a.game_res)) return false; }
-    else if (k == "--neml") { if (!next(a.neml)) return false; }
+    else if (const int n = neml::parse_flag(argc, argv, i, neml::process_config()); n != 0) { if (n < 0) return false; i += n - 1; }
     else if (k == "--neml-inject") a.neml_inject = true;
     else if (k == "--workers") { if (!nexti(a.workers)) return false; }
     else if (k == "--prior-w") { if (!nextd(a.prior_w)) return false; }
@@ -630,14 +629,10 @@ int main(int argc, char** argv) {
         "CPU",
 #endif
         model.dispatcher_size(), a.model.c_str(), hex(model.weights_sha256()).substr(0, 16).c_str());
-    if (!a.neml.empty()) {
-      neml::Ring ring; const std::string rp = a.neml + "/nemo_episodic.bin";
-      if (!ring.load(rp)) { say("FAIL neml: bad ring %s", rp.c_str()); return false; }
-      size_t nt = 0; const auto runs = ring.ordered();
-      const std::string dg = neml::digest(runs, ring.h.total_written, [&](const std::string& x) { return model.tokenize_no_bos(x).size(); }, 384, &nt);
-      { std::ofstream f(a.neml + "/nemo_digest.txt", std::ios::binary); f << dg; }
-      { std::ofstream f(a.neml + "/nemo_priors.txt", std::ios::binary); f << neml::priors_text(neml::priors(runs)); }
-      say("NEML (SCRATCH): ring %s lifetime=%u in_ring=%zu; digest %zu tokens (cap 384, real tokenizer); inject=%d", rp.c_str(), ring.h.total_written, runs.size(), nt, int(a.neml_inject));
+    if (neml::process_config().record || a.neml_inject) {
+      size_t nt = 0;
+      const std::string dg = neml::memory_block([&](const std::string& x) { return model.tokenize_no_bos(x).size(); }, 384, &nt);
+      say("NEML: memory block %zu tokens (cap 384, real tokenizer); recording=%d inject=%d", nt, int(neml::process_config().record), int(a.neml_inject));
       if (a.neml_inject) brain.neml_prefix = dg;
     }
     const double t1 = now_s();
@@ -858,7 +853,7 @@ int main(int argc, char** argv) {
     bool carrying = false, fell = false, at_exit = false, invalid = false;
     int decisions = 0, view_caused = 0, view_caused_n = 0, raw_blocked = 0, bumps = 0, breaks = 0, odo_mismatch = 0, leaf_flips = 0;
     const double t_nav = now_s();
-    neml::Recorder nrec;  // SCRATCH NEML triggers (recorded only when --neml is set)
+    neml::Recorder nrec;  // NEML per-event triggers (a receipt is written at the end unless --neml off)
     bool neml_infra_fail = false;  // game/MCP failure: no receipt (not an honest miss)
     while (decisions < a.max_dec) {
       if ((now_s() - t_nav) > 60.0 * a.max_minutes) { say("wall-clock cap reached (%d min)", a.max_minutes); break; }
@@ -890,7 +885,6 @@ int main(int argc, char** argv) {
         if (a.act_blank) say("act-blank holdout: acting on blank_top=%s (live-view choice was %s)", kActWord[choice], kActWord[o.choice]);
         const bool caused = n_allowed > 1 && choice != o.blank_top;
         if (n_allowed > 1) { ++view_caused_n; if (caused) ++view_caused; }
-        if (n_allowed > 1) ++nrec.forks;  // option-fork search ran (lookahead pause)
         if (caused) nrec.event(neml::kVisualRecovery, decisions, 255, ox_, oy_, "view_caused");
         else if (o.choice != o.pol_top && !o.allowed[o.raw_top]) nrec.event(neml::kVisualRecovery, decisions, 160, ox_, oy_, "leaf_flip_raw_blocked");
         else if (o.choice != o.pol_top && n_allowed > 1) nrec.event(neml::kForkPivot, decisions, 128, ox_, oy_, "leaf_flip_redecide");
@@ -982,16 +976,18 @@ int main(int argc, char** argv) {
       say("summary: maze=%s decisions=%d moves=%zu distinct_cells=%zu end=(%d,%d) fell=%d exit=%d invalid=%d key=%d breaks=%d bumps=%d view_caused=%d/%d (decisions with >1 allowed action) leaf_flips=%d raw_top_blocked=%d odo_mismatch=%d vulkan_captures=%d model_tokens=%zu nav_minutes=%.1f",
           a.maze.c_str(), decisions, path.size() - 1, uniq.size(), ox_, oy_, int(fell), int(at_exit), int(invalid), int(carrying), breaks, bumps, view_caused, view_caused_n, leaf_flips,
           raw_blocked, odo_mismatch, n_caps, brain.toks, (now_s() - t_nav) / 60.0);
-      if (!a.neml.empty() && neml_infra_fail) say("NEML: infrastructure failure (game/MCP), receipt NOT written (not an honest miss)");
-      if (!a.neml.empty() && !neml_infra_fail) {
-        neml::Ring ring; const std::string rp = a.neml + "/nemo_episodic.bin";
-        if (ring.load(rp)) {
-          std::string note = fs::path(a.out).filename().string();
-          const uint32_t id = ring.append(nrec.finish(uint32_t(std::time(nullptr)), decisions, at_exit, note));
-          const bool sv = ring.save(rp);
-          { std::ofstream f(a.neml + "/nemo_priors.txt", std::ios::binary); f << neml::priors_text(neml::priors(ring.ordered())); }
-          say("NEML (SCRATCH): receipt run_id=%u exit=%d steps=%d forks=%u dead_ends=%u events_fired=%zu saved=%d -> %s", id, int(at_exit), decisions, nrec.forks, nrec.dead_ends, nrec.all.size(), int(sv), rp.c_str());
-        } else say("NEML: ring load failed; receipt NOT written");
+      const bool neml_on = neml::process_config().record;
+      if (neml_on && neml_infra_fail) say("NEML: infrastructure failure (game/MCP), receipt NOT written (not an honest miss)");
+      if (neml_on && !neml_infra_fail) {
+        neml::ReceiptInfo info;
+        info.maze_seed = uint32_t(a.b1_seed);
+        info.maze_w = info.maze_h = a.b1_size;
+        info.path_kind = neml::kPathVision;
+        info.flags = neml::kFlagModel;
+        std::string nerr;
+        const uint32_t id = neml::write_receipt(neml::process_config(), nrec, decisions, at_exit, "vision " + a.maze, info, &nerr);
+        if (id) say("NEML: receipt run_id=%u exit=%d steps=%d forks=%u dead_ends=%u events_fired=%zu", id, int(at_exit), decisions, nrec.forks, nrec.dead_ends, nrec.all.size());
+        else say("NEML: receipt NOT written: %s", nerr.c_str());
       }
       if (a.reach > 0) say("reach: N=%d ranged_acts=%d refused=%d max_blocks_used=%d", a.reach, reach_acts, reach_refused, reach_max);
       say("visnav obs side chain (SCRATCH, never official, never a golden): sha256 head=%s len=%zu; trace W-cells sha256=%s", hex(chain).c_str(), chain_len, sha_hex(pilot.trace()).c_str());

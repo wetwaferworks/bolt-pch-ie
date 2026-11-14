@@ -23,3 +23,10 @@ VOID_*/
 # Local lab artifacts and secrets. Never commit these.
 local/
 tesla-seed.bin
+# Little Nemo's episodic memory ledger lives in the user data folder; never commit a copy.
+nemo_episodic.bin
+nemo_episodic.bin.tmp
+nemo_priors.txt
+nemo_chat_notes.bin
+nemo_episodic.lock.d/
+neml-test/

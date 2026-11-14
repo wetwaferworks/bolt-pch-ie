@@ -28,6 +28,8 @@
 #include "pchie/PchStack.h"
 #include "pchie/Sha256.h"
 #include "pchie/rl/MazeL1.h"  // opt-in; official runners never call set_rl()
+#include "pchie/neml/NemlQuery.h"  // episodic memory: receipts at teardown, opt-in memory prior
+#include "pchie/neml/NemlTrack.h"
 #include "pchie/pchie_mcts.h"
 #include "pchie/pchie_tree.h"
 
@@ -83,6 +85,13 @@ struct MazeResult {
   bool attest_computed = false;
   AttestationStatus attest_status = AttestationStatus::Unattested;
   std::string attest_reason;
+  // Episodic memory (NEML). Side-only: recording never feeds the chain, h_world, or actions.
+  uint32_t neml_receipt_id = 0;          // receipt written at teardown (0 = none; see neml_err)
+  std::string neml_err;
+  size_t neml_events = 0;                // triggers fired this run
+  int neml_forks = 0, neml_dead_ends = 0;
+  std::vector<uint8_t> neml_snapshot_sha;  // ledger snapshot this run read (empty = memory prior off)
+  int neml_memory_nudges = 0;            // expansions whose priors the memory changed
 };
 
 class HeadlessMaze final {
@@ -193,6 +202,18 @@ class HeadlessMaze final {
   // An engaged MazeRl replaces the search below. It uses the same loop guard (through rl_traits' state key and
   // pit check), and tiptoe still records committed steps when it is enabled.
   void set_rl(rl::MazeRl* r) { rl_ = r; }
+  // Episodic memory (NEML), include/pchie/neml. Recording is ON by default: every run with Little Nemo writes one
+  // receipt at teardown (process switch neml::process_config().record, PCHIE_NEML=0 / --neml off turns it off).
+  // Recording only watches committed steps; it never changes a decision or a hash.
+  void set_neml_record(bool on) { neml_record_ = on; }            // per-maze off switch
+  void set_neml_record_unit(bool on) { neml_record_unit_ = on; }  // tests: also record model-free fixture runs
+  void set_neml_config(const neml::Config* c) { neml_cfg_ = c; }  // tests: a private ledger instead of the process one
+  // Memory prior (opt-in per run; official runners and golden tests never call this). Root and tree expansions at a
+  // cell divide the prior of a move that led into a recorded dead end from that cell (this maze only), so a
+  // remembered dead end is tried later. The snapshot is hashed into the chain at run start (provenance), so a
+  // memory-informed run's hashes differ from an official run's by design. The snapshot must outlive the run.
+  void set_memory(const neml::Snapshot* s) { mem_ = s; }
+  uint64_t maze_key() const { return neml::maze_key_of(grid_.canonical_bytes()); }
   bool tiptoe_enabled() const noexcept { return tiptoe_; }
   static bool pit_adjacent(const MazeGrid& g, int x, int y) {
     return g.is_pit(x, y - 1) || g.is_pit(x, y + 1) || g.is_pit(x + 1, y) || g.is_pit(x - 1, y);
@@ -497,6 +518,7 @@ class HeadlessMaze final {
     if (!(temp > 0.0f)) temp = 1.0f;
     const uint64_t seed = stack.search().puct().nodes[node].seed;
     auto edges = edges_from_actions(legal, st, stack.search().task_id(), logits, model, temp, seed);
+    mem_adjust_(edges, st);  // no-op unless set_memory()
     if (edges.empty()) {
       err = "no expansion edges";
       return false;
@@ -543,15 +565,17 @@ class HeadlessMaze final {
       default: return g.at_exit();
     }
   }
-  static rl::MazeTraits<MazeGrid> rl_traits() {
+  rl::MazeTraits<MazeGrid> rl_traits() const {
     rl::MazeTraits<MazeGrid> t;
     t.legal = [](const MazeGrid& s) { return s.legal_actions(); };
     t.apply = [](MazeGrid& s, MazeAction a) { return s.apply(a); };
     t.goal = [](const MazeGrid& s, uint32_t k) { return rl_goal(s, k); };
     t.oracle_value = [](const MazeGrid& s, uint32_t k) { return maze_value(s, k); };
-    t.official_edges = [](const std::vector<MazeAction>& a, const MazeGrid& s, uint32_t k,
-                          const std::vector<float>* lg, IModel* m, float temp, uint64_t seed) {
-      return edges_from_actions(a, s, k, lg, m, temp, seed);
+    t.official_edges = [this](const std::vector<MazeAction>& a, const MazeGrid& s, uint32_t k,
+                              const std::vector<float>* lg, IModel* m, float temp, uint64_t seed) {
+      auto e = edges_from_actions(a, s, k, lg, m, temp, seed);
+      mem_adjust_(e, s);  // no-op unless set_memory()
+      return e;
     };
     t.official_pick = [](const PuctSearch& S, const MazeGrid& s, uint32_t k) { return pick_root_action(S, s, k); };
     t.obs_text = [](const MazeGrid& s, uint32_t k) { return rl::b1_obs_text(s, k); };
@@ -571,6 +595,14 @@ class HeadlessMaze final {
       const auto& nodes = stack.search().puct().nodes;
       return nodes.empty() || !nodes[0].expanded || nodes[0].edges.empty();
     };
+    const MazeGrid neml_pre = g;  // NEML: committed-step triggers (read-only)
+    int32_t neml_top = -1;
+    int neml_moves = 0;
+    if (!stack.search().puct().nodes.empty()) {
+      const auto& re = stack.search().puct().nodes[0].edges;
+      neml_top = neml::top_prior_token(re);
+      for (const auto& e : re) if (neml::dir_of_action(e.token) != neml::kDirNone) ++neml_moves;
+    }
     if (mirror_log_) {
       if (empty_commit_fatal()) {
         out.err = "empty commit";
@@ -616,6 +648,7 @@ class HeadlessMaze final {
       mirror_log_->append(std::move(fork));
       out.actions.push_back(act);
       ++task_step;
+      neml_step_(neml_pre, act, g, neml_top, neml_moves, int(out.actions.size()) - 1);
       if (tiptoe_) tiptoe_verify_(tt_pre_x, tt_pre_y, g);
       lg_.after_commit(lg_key_(g), out.actions.size(), g.x(), g.y(), task_name(task_id));
       return CommitStep::Applied;
@@ -633,6 +666,7 @@ class HeadlessMaze final {
     }
     out.actions.push_back(act);
     ++task_step;
+    neml_step_(neml_pre, act, g, neml_top, neml_moves, int(out.actions.size()) - 1);
     if (tiptoe_) tiptoe_verify_(tt_pre_x, tt_pre_y, g);
     lg_.after_commit(lg_key_(g), out.actions.size(), g.x(), g.y(), task_name(task_id));
     return CommitStep::Applied;
@@ -798,8 +832,22 @@ class HeadlessMaze final {
     return true;
   }
 
-  bool run_common(IModel* model, const std::string& world_text, IHashChain* chain,
-                  MazeResult& out) {
+  // Every run goes through here: the run itself, then the NEML receipt at teardown.
+  bool run_common(IModel* model, const std::string& world_text, IHashChain* chain, MazeResult& out) {
+    neml_trk_.begin(grid_);
+    mem_nudges_ = 0;
+    mem_key_ = mem_ ? maze_key() : 0;
+    const bool ok = run_inner(model, world_text, chain, out);
+    if (mem_) out.neml_snapshot_sha = mem_->sha256;
+    out.neml_memory_nudges = mem_nudges_;
+    out.neml_events = neml_trk_.rec.all.size();
+    out.neml_forks = neml_trk_.rec.forks;
+    out.neml_dead_ends = neml_trk_.rec.dead_ends;
+    neml_write_(model != nullptr, out);
+    return ok;
+  }
+
+  bool run_inner(IModel* model, const std::string& world_text, IHashChain* chain, MazeResult& out) {
     out = {};
     ticks_used_ = 0;
     mirror_refusals_ = 0;
@@ -817,6 +865,11 @@ class HeadlessMaze final {
       MazeResult* o;
       ~AuthPublish() { s->publish(*o); }
     } auth_publish{&auth_session, &out};
+    if (mem_ && chain) {  // provenance: the ledger snapshot this run's decisions read (memory-informed runs only)
+      std::vector<uint8_t> p{'n', 'e', 'm', 'l', '.', 's', 'n', 'a', 'p', '.', 'v', '1'};
+      p.insert(p.end(), mem_->sha256.begin(), mem_->sha256.end());
+      chain->append(ChainRecord{ChainRecordKind::Custom, std::move(p)});
+    }
     if (search_budget_ <= 0) {
       out.err = "search budget";
       return false;
@@ -862,6 +915,31 @@ class HeadlessMaze final {
     }
     out.ok = true;
     return true;
+  }
+
+  void mem_adjust_(std::vector<PuctEdge>& e, const MazeGrid& st) const {
+    if (!mem_) return;
+    const neml::Query q(*mem_);
+    if (neml::apply_memory_prior(e, q.junction(mem_key_, st.x(), st.y()), neml::dir_of_action)) ++mem_nudges_;
+  }
+  void neml_step_(const MazeGrid& pre, int32_t act, const MazeGrid& post, int32_t top, int moves, int step) {
+    neml_trk_.step(pre, act, post, top, moves, step, [](const MazeGrid& c) {
+      return c.cell(c.x(), c.y()) == MazeCell::KeyA || c.adjacent_to_door() || c.in_pit();
+    });
+  }
+  void neml_write_(bool model_run, MazeResult& out) {
+    const neml::Config& c = neml_cfg_ ? *neml_cfg_ : neml::process_config();
+    if (!neml_record_ || !c.record || !(model_run || neml_record_unit_)) return;
+    neml::ReceiptInfo info;
+    info.maze_key = maze_key();
+    info.maze_seed = uint32_t(seed_);
+    info.maze_w = grid_.width();
+    info.maze_h = grid_.height();
+    info.path_kind = neml::kPathMaze;
+    info.flags = uint8_t((model_run ? neml::kFlagModel : 0) | (mem_ ? neml::kFlagMemoryPrior : 0));
+    const std::string note = out.ok ? std::string("maze ok") : ("maze " + out.err);
+    out.neml_receipt_id = neml::write_receipt(c, neml_trk_.rec, int(out.actions.size()),
+                                              out.reached_exit || neml_trk_.exit_seen, note, info, &out.neml_err);
   }
 
   static uint64_t lg_key_(const MazeGrid& g) {
@@ -930,6 +1008,13 @@ class HeadlessMaze final {
   int tiptoe_checks_ = 0, tiptoe_crossings_ = 0, tiptoe_footing_ok_ = 0, tiptoe_footing_fail_ = 0;
   rl::LoopGuard lg_;  // loop guard v2, on by default (shared with Stage B and the L1/null decide path)
   StreamAuthFlags stream_auth_;  // TESLA + attestation, on by default
+  // NEML episodic memory: recording on by default (model runs), memory prior opt-in.
+  bool neml_record_ = true, neml_record_unit_ = false;
+  const neml::Config* neml_cfg_ = nullptr;
+  neml::GridTracker neml_trk_;
+  const neml::Snapshot* mem_ = nullptr;
+  uint64_t mem_key_ = 0;
+  mutable int mem_nudges_ = 0;
 };
 
 }  // namespace pchie

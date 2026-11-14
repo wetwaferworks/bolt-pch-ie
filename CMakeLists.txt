@@ -239,3 +239,15 @@ add_executable(pchie_anchor_verifier_test anchoring/tests/anchor_verifier_test.c
 target_include_directories(pchie_anchor_verifier_test PRIVATE anchoring/src)
 target_link_libraries(pchie_anchor_verifier_test PRIVATE pchie_core)
 add_test(NAME pchie_anchor_verifier COMMAND pchie_anchor_verifier_test ${CMAKE_CURRENT_BINARY_DIR}/anchor-verifier-tmp ${CMAKE_CURRENT_SOURCE_DIR}/anchoring/policy)
+
+# Little Nemo's episodic memory ledger (NEML), header only under include/pchie/neml. Recording is on by default in
+# the maze drivers; every test below writes its receipts to a folder in the build tree, never the user's ledger.
+add_executable(pchie_neml tools/pchie_neml.cpp)
+target_link_libraries(pchie_neml PRIVATE pchie_core)
+add_executable(pchie_neml_test tests/pchie_neml_test.cpp)
+target_link_libraries(pchie_neml_test PRIVATE pchie_core)
+add_test(NAME pchie_neml COMMAND pchie_neml_test)
+get_property(_pchie_all_tests DIRECTORY PROPERTY TESTS)
+foreach(_t IN LISTS _pchie_all_tests)
+  set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "PCHIE_NEML_DIR=${CMAKE_CURRENT_BINARY_DIR}/neml-test")
+endforeach()

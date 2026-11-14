@@ -79,7 +79,7 @@ A researcher-facing guide lives under [`docs/guide/`](docs/guide/README.md). It 
 | `include/`, `src/` | The core harness and inference engine: GGUF loading, deterministic CPU/CUDA kernels, KV pools, MCTS/PUCT search, PCH stack, maze fixtures (B1, Stage B), hash chains. Reasoning-layer headers are `include/pchie/rl/`, sources `src/rl/`. |
 | `tests/` | Gate and regression tests for the core (step gates, maze suites, contract tests). Reasoning-layer tests are `tests/rl/`. |
 | `reasoning/` | Scratch data and scripts for the reasoning layers (label stubs, hash-move notes). The layer itself builds with the root CMake. |
-| `vision/` | One vision-only navigation (visnav) driver, labeled Scratch. Way-shut, reach, and NEML are runtime flags, default off. Seeded mazes keep seed 1 and size 16. The CUDA decide path is a separate compile. |
+| `vision/` | One vision-only navigation (visnav) driver, labeled Scratch. Way-shut and reach are runtime flags, default off; memory receipts are on (`--neml off`). Seeded mazes keep seed 1 and size 16. The CUDA decide path is a separate compile. |
 | `anchoring/` | Transparency anchoring: RFC 9162-style Merkle log, signed tree heads, witness cosigning, fingerprints, verifier. |
 | `experiments/` | Launchers for the planner comparison, query-before-plan, and Stage B runs, and the lab environment variables. |
 | `tools/` | Small utilities (maze preview, LithoKraft pilot, search gate). |

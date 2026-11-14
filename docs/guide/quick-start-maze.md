@@ -93,6 +93,27 @@ Each test line ends in `PASS` or `FAIL`, and each program ends with a summary an
 - **Seal a run into the transparency log.** `pchie_anchor.exe` emits, verifies, and cosigns anchor records; `pchie_anchor verify <log> --anchor-index i --chain-file <side log> --fingerprint "<digits>"` prints PASS or FAIL for each check. See [Transparency anchoring](transparency-anchoring.md).
 - **Watch a stream.** `pchie_tesla_watcher.exe` checks a TESLA stream as it is written.
 - **Run it in the game.** `pchie_lk_pilot.exe --out run1 --game <path>\LithoKraft.exe` decides the maze, starts LithoKraft, checks that the world equals the decided grid, and walks the committed moves with the player's own input. `--maze stagea` uses the 64 by 64 fixture; `--unit` uses the null-model driver. See [Playing LithoKraft](playing-lithokraft.md#the-harness-in-the-game).
-- **The vision path.** `pchie_lk_visnav.exe --nav --out run2 --game <path>\LithoKraft.exe` has Little Nemo decide every move from the live game framebuffer only, with no map in the decision. `--probe` builds an 11 by 9 probe fixture instead, `--speed` times one decision, and `--offline DIR` encodes saved PNG frames without the game. `--way-shut`, `--reach N` (0 to 4), and `--neml DIR` are opt-in and off by default. This path is labeled Scratch.
+- **The vision path.** `pchie_lk_visnav.exe --nav --out run2 --game <path>\LithoKraft.exe` has Little Nemo decide every move from the live game framebuffer only, with no map in the decision. `--probe` builds an 11 by 9 probe fixture instead, `--speed` times one decision, and `--offline DIR` encodes saved PNG frames without the game. `--way-shut` and `--reach N` (0 to 4) are opt-in and off by default. Each run writes a memory receipt (see below). This path is labeled Scratch.
 
+## 6. Little Nemo's memory
+
+Little Nemo keeps a short memory of its own runs, the episodic memory ledger. After every maze, Stage B, or vision run with the model, the harness writes one 256-byte receipt: the step count, whether it reached the exit, the maze it was on, and up to six moments that stood out. Four things count as a moment:
+
+- **Dead end:** a step into a new cell with no way on but back. It is filed at the last junction, with the direction that led there.
+- **Recovery:** the first new cell after a dead end.
+- **Fork pivot:** a committed move that differs from the move with the highest prior. The fork count in a receipt counts only these, not every decision.
+- **Exit found:** the step that reaches the exit.
+
+The ledger keeps the newest 16 receipts in a ring. Misses are kept like exits; nothing is dropped for being a failure. The files live in your user data folder, never in the repository: `%LOCALAPPDATA%\BoltPCHIE\neml` on Windows, `~/.local/share/bolt-pchie/neml` elsewhere. Set `PCHIE_NEML_DIR` to use another folder.
+
+`pchie_neml.exe --status` lists the receipts and the switches. `pchie_neml.exe --block` prints the memory block that next week's chat interface will put in front of a conversation, under the header `[SYSTEM: EPISODIC MEMORY LEDGER]`. It is capped at 384 tokens, counted with Little Nemo's own tokenizer, and the oldest runs are dropped first to fit.
+
+**Using the memory to decide.** The pilot and `pchie_rl_l1l2_test.exe --maze b1|stagea` read the ledger as it was when the run started. At a junction where an earlier run on the same maze hit a dead end, the move that led there gets a smaller prior, so Little Nemo tries it later. This works for the plain search and for the reasoning layers. The run records a hash of that ledger snapshot in its side chain, so the same ledger always gives the same run. Because the memory can change moves, a run that used it will not match the official recorded maze hashes; the pilot says so in its report. With an empty ledger, nothing is read and nothing changes. The official maze tests and the golden checks never read the memory, so their pinned hashes stay put.
+
+| Switch | Default | How to change it |
+|---|---|---|
+| Recording receipts | On | `--neml off` or `PCHIE_NEML=0` |
+| Using memory to decide | On, where the run supports it | `--neml-reason off` or `PCHIE_NEML_REASON=0` |
+| Ledger folder | Your user data folder | `--neml DIR` or `PCHIE_NEML_DIR` |
+| Chat write-back (a 64-byte note after a chat) | Off | `--neml-chat-writeback on`, not approved for use yet |
 If something fails, the [Windows getting-started page](getting-started-windows.md) lists common errors.

@@ -89,18 +89,62 @@ The console command `give <itemId> [count]` also adds items.
 
 Trace is the game's wiring, in red and blue. The two colours never connect, so they can run side by side. Signal strength runs from 0 to 64 and drops by 1 per block along flat Trace. Lamps light from the strongest signal next to them. Exact numbers show in the F3 overlay. Full rules, including soft and hard power, are in [Signal rules, inventory, and the Component Test world](../components/signal-rules.md).
 
-The components in this build, each with its own spec sheet:
+### Every component in this build
 
-- [Multiplexor](../components/multiplexor.md): a 2:1 mux. It can carry a signal from one colour to the other.
-- [Dialor](../components/dialor.md): a 0 to 64 signal source. Set the dial with Alt and the mouse wheel.
-- [Via](../components/via.md): red and blue insulated tubes that carry Trace up, down, and sideways with no loss.
-- [Watchor](../components/watchor.md): an eye that pulses 64 out of its back for one tick when the block in front of it changes.
-- [Bitor](../components/bitor.md): bitwise AND, OR, XOR, or NOR of two strengths, picked by a control strength.
-- [Pushor](../components/pushor.md): senses power. Pushing is not implemented yet.
-- [Swivelor](../components/swivelor.md): a rotary base that holds a detent. Turning is not implemented yet.
-- [Resin](../components/resin.md): an item only, for now. It places nothing.
+This list comes from the Play D9 source: the block registry, the behaviour catalog, and the creative palette's Trace and Lamps/LEDs families, in palette order. Each entry says what the block does, which faces it reads and drives, and how you set it. "Front" is the way the block faces when you place it, "back" is the opposite face, and left and right are as seen from behind the block. Where the code has a placeholder instead of a behaviour, the entry says **not implemented yet**.
 
-The build also has Trace itself, lamps and LEDs, Pulsor, Repeator, and Dividor, the halving block used in the Stage B doors.
+How settings work: a right-click uses a block only if the block is marked usable; on anything else, a right-click places the block in your hand. Holding Left Alt with a right-click (or Shift with a right-click, on blocks that have a second setting) changes the second setting of any component. Holding Left Alt and turning the wheel steps a 1 to 64 setting up or down; the Routor ignores the wheel. The look-at readout and the F3 overlay show each block's current setting.
+
+**Trace family**
+
+| Component | What it does | Faces | Controls |
+|---|---|---|---|
+| Red Trace, Blue Trace | The wiring. Strength drops by 1 per block. Red and blue never connect. Trace needs a solid block under it or above it. | Links to neighbouring Trace and to component faces. | None. |
+| Red Via, Blue Via | Insulated tubes that carry Trace up, down, and sideways with no loss. Side-lying forms are built automatically at junctions. See [Via](../components/via.md). | Ends link to same-colour vias and Trace. | None. |
+| Pulsor | Fires short pulses. With a clock on a side, a rising clock edge fires a pulse at the back's strength. With no clock, a rising edge on the back comes out one tick later as a pulse. A pulse travels a connected Trace run without losing strength (up to 64 blocks) and stays high for 4 ticks. | Back: data. Left, right: clock. Front: out. | None. |
+| Memor | Stores a value. A new non-zero value on the back is stored; the front puts it out steadily. A rising edge on either side clears it. The readout shows the value and its character. 8-tick delay. | Back: write. Left, right: clear. Front: stored value. | None. |
+| Randor | Rolls a random number. Each rising clock edge rolls 1 to N, where N is the back's strength, and the front holds the roll until the next one. 8-tick delay. | Back: range N. Left, right: clock. Front: the roll. | None. |
+| Fusor | Adds: front = back + left + right, capped at 64. | Back, left, right: inputs. Front: sum. | None. |
+| Dividor | Halves: front = back ÷ 2, rounded down. 1-tick delay. | Back: input. Front: out. Sides ignored. | None. |
+| Repeator | Boosts any input to a full 64 after its delay. A new non-zero value dips the output for one tick, so a clock downstream sees a fresh edge. A powered Repeator pointing into its side locks it. | Back: in. Front: out. Left, right: lock (Repeators only). | Right-click cycles the delay 2, 4, 8, 16, 32, 64 ticks. |
+| Thresholdor | Compares. With one reference, it passes the back's value when it is at least the reference; with both, when it is between them; with none, always. Subtract mode puts out back minus the stronger side, never below 0. Read mode also reads the level of the block behind it (a Timer Buffer's count or a Catchor's caught value). 1-tick delay. | Back: input. Left: low reference. Right: high reference. Front: out. | Right-click: compare or subtract. Alt + right-click: read mode on or off. |
+| Multiplexor | A 2:1 switch. Control off picks input A, control on picks input B. The output has no colour, so it can move a signal from red to blue. Split mode routes red and blue on separate lanes. See [Multiplexor](../components/multiplexor.md). | Back: A. Right: B. Left: control. Front: out. | None by click; it is switched only by what feeds its control face. |
+| Routor | A crossover with two paths that never mix, one tick each. Mode 1: back to left, right to front. Mode 2: back to right, left to front. Mode 3: back to front, and left and right pass across each other. | Back, left, right: per mode. | Alt + right-click cycles the mode. |
+| Latchor | Matches a value. On any tick when the back is exactly its set value (1 to 64), the front puts out that value; otherwise 0. | Back: in. Front: out. | Alt + right-click, or Alt + wheel, sets the value. |
+| Catchor | Catches one address on a line. When placed, it binds to the first Trace touching a side, and that side and colour become its input. When the input equals its match value, it sends that value out as a one-tick pulse. The line itself carries on. | Input: the bound side. Output: straight on, left, or right. | Right-click cycles the output side. Alt + right-click or Alt + wheel sets the match value (1 to 64). |
+| Switch | A lever: a steady 64 while on. On its own it powers every side; mounted on a block, it powers through that block. | All sides, or its support. | Right-click toggles it. |
+| Button | A 64 pulse for 10 ticks. | All sides, or its support. | Right-click presses it. |
+| Keyboard | A typing terminal. Each key you type leaves as one pulse: the character's code + 1 out the front, Enter (1) and Backspace (2) out the right side. | Front: characters. Right: Enter and Backspace. | Right-click starts and stops typing. |
+| Tone Block | Plays a note. The back's strength is the pitch, 1 to 64 semitones up from C2; 0 is silent. It drives nothing. | Back: pitch. | None. |
+| Signal Transmittor | A radio sender. When placed, it binds to the colour of the Trace beside it, then broadcasts the back's strength on its channel. It never drives Trace. Its class also has a steady beacon setting on a plain right-click, but the block is not marked usable, so a right-click does not reach it in this build. | Back: in. Out: radio. | Alt + right-click cycles the channel. |
+| Signal Receivor | A radio receiver. It puts out what it hears on its channel, on the colour it received, one tick later. | Front: out, on the received colour. | Alt + right-click cycles the channel. |
+| Dish | A long-range receiver: it hears much farther than a Signal Receivor. It is a single block; a larger multi-block dish is **not implemented yet**. | Front: out. | Alt + right-click cycles the channel. |
+| Overclockor | A radio jammer: with jamming on, it blocks every channel but its own within 64 blocks. Its class turns jamming on with a plain right-click, which this build does not route to it (it is not marked usable). Speeding up ticks is **not implemented yet**. It drives no signal. | None. | Alt + right-click cycles the jam channel. |
+| Portor | Marks one face of a chip as an input or an output, in the Trace colour beside it. In the build area it is only a marker and drives nothing; printing a chip is **not implemented yet**. | Reads adjacent Trace (input mode). | Right-click toggles input or output. |
+| Breakor | A circuit breaker. It passes the back's signal to the front until the signal goes over its limit, then trips and puts out 0 until it is reset. A Repeator turning on at a side also resets it. | Back: in. Front: out. Left, right: reset (Repeators only). | Right-click resets it. Alt + right-click or Alt + wheel sets the limit (1 to 64, 64 by default). |
+| Chipor, Chipor Viewport | Printed-chip blocks. The Viewport shows a still miniature of a circuit through its glass top. Neither one simulates: the tiny circuit does not run (**not implemented yet**). | None. | None. |
+| Lithographor | The chip printer's model. It has **no behaviour yet**. | None. | None. |
+| Etchor | Holds a name for an etched chip. The etch itself runs from the console: `etch <name>` turns a blank wafer into a Chipor with that name. The Selector, Connector, and Laysor machine around it is **not implemented yet**. | None. | None in the world. |
+| Dialor | A 0 to 64 source. The front puts out the dial value unless the back is powered. 1-tick delay. See [Dialor](../components/dialor.md). | Back: inhibit. Front: out. Sides: none. | Alt + wheel sets the dial (wraps 0 and 64). A plain right-click does nothing. |
+| Watchor | An eye. When the block in front of it changes, it pulses 64 out of its back for one tick, at most every two ticks. Appear, remove, and sweep cases are **not decided yet**. See [Watchor](../components/watchor.md). | Front: watched cell. Back: pulse. Sides: none. | None. |
+| Bitor | Bitwise AND, OR, XOR, or NOR of two strengths. The back's strength picks the operation: 0 to 15 AND, 16 to 31 OR, 32 to 47 XOR, 48 to 64 NOR. Updates two ticks after a change. See [Bitor](../components/bitor.md). | West, east: operands. Back: control. Front: out. | None. |
+| Pushor | Senses soft and hard power and lights when powered. Extending, spitting, and retracting are **not implemented yet**. See [Pushor](../components/pushor.md). | Back, sides, top, bottom: power. Front: the pushing face. | None. |
+| Swivelor | A rotary base that holds a detent (0, 16, 32, 64). Turning, and the face that sets the detent, are **not implemented yet**; it reads and drives nothing. See [Swivelor](../components/swivelor.md). | None yet. | None. |
+
+**Lamps/LEDs family**
+
+| Component | What it does | Faces | Controls |
+|---|---|---|---|
+| Red LED, Blue LED | Inverters. An LED is lit unless the block it is mounted on is powered, with a one-tick delay. A lit LED powers its own colour of Trace and the solid block above it. | Reads its support. Drives its colour and the block above. | None. |
+| Lamp | Lights from any powered neighbour. Lamps end a signal; they pass nothing on. | All sides. | None. |
+| lamp16, lamp32, lamp64 | Colour lamps. The strongest neighbouring signal picks a colour from a 16, 32, or 64 colour set, wrapping around. | All sides. | None. |
+| Emitor | The light source of the chip printer. It lights like a lamp when powered; its beam is drawn, not simulated. | All sides. | None. |
+
+**Outside the palette**
+
+- **Timer Buffer** is registered and works (a count from 0 to 64 that ticks down, in loop or once mode), but it is hidden from the palette and the Component Test world until its art is done. You can still place it by id.
+- **Resin** is an item only. It places nothing, and nothing in the simulation reads it yet. See [Resin](../components/resin.md).
+- **Selector, Connector, Laysor, Input Buffer, Fabor, AutoFabor, and Vior** are registered blocks with no behaviour yet. They are parts of machines that are still to come.
 
 ## The Component Test world
 

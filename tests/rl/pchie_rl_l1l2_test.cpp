@@ -14,6 +14,7 @@
 //   pchie_rl_l1l2_test.exe --compare-l2 SEEDED.log EMPTY.log NULL.log   query-before-plan verdict (exit 0 / 2 invalid)
 //   Launchers: experiments/next-runs/. Commands and durations: docs/notes/next-runs.md.
 #include "pchie/HeadlessMaze.h"
+#include "pchie/neml/NemlQuery.h"
 #include "pchie/MazeOracle.h"
 #include "pchie/ScaledPitMaze.h"
 #include "pchie/Dividor.h"
@@ -820,6 +821,12 @@ static int maze_run(int argc, char** argv) {
     if (a) mz.enable_mirror_sim(&log);
     if (steps > 0) mz.set_step_budget(steps);
     if (eng) mz.set_rl(&r);
+    // Episodic memory prior (on by default for these scratch runs; --neml-reason off disables; empty ledger = unused).
+    if (!neml::apply_cli(argc, argv)) { std::printf("[RLON] --neml takes on, off or a folder; --neml-reason takes on or off\n"); return 3; }
+    const neml::Snapshot snap = neml::process_config().memory_prior ? neml::Snapshot::take(neml::process_config()) : neml::Snapshot::empty();
+    if (!snap.runs.empty()) mz.set_memory(&snap);
+    std::printf("[RLON] memory prior %s (snapshot runs=%zu sha256=%s)\n", snap.runs.empty() ? "unused" : "ON", snap.runs.size(),
+                hexv(snap.sha256).c_str());
     Sha256HashChain ch;
     MazeResult out;
     r.begin_run();

@@ -28,6 +28,8 @@
 #include "pchie/NodeSeed.h"
 #include "pchie/PchStack.h"
 #include "pchie/rl/MazeL1.h"  // opt-in reasoning layer
+#include "pchie/neml/NemlStore.h"  // episodic memory receipt at teardown
+#include "pchie/neml/NemlTrack.h"
 #include "pchie/Dividor.h"
 #include "pchie/FailureTrace.h"
 #include "pchie/Multiplexor.h"
@@ -95,6 +97,11 @@ struct StageBDoorResult {
   bool attest_computed = false;
   AttestationStatus attest_status = AttestationStatus::Unattested;
   std::string attest_reason;
+  // Episodic memory (NEML) receipt, side-only (never feeds the world hash or actions).
+  uint32_t neml_receipt_id = 0;
+  std::string neml_err;
+  size_t neml_events = 0;
+  int neml_forks = 0, neml_dead_ends = 0;
 };
 
 class StageBDoorMaze final {
@@ -135,6 +142,10 @@ class StageBDoorMaze final {
   void enable_mirror_sim(MirrorSimSideLog* log) { mirror_log_ = log; }
   // Opt-in reasoning layer (default nullptr). Official runners never call this.
   void set_rl(rl::MazeRl* r) { rl_ = r; }
+  // Episodic memory (NEML) recording, ON by default for model runs (see HeadlessMaze); recording only.
+  void set_neml_record(bool on) { neml_record_ = on; }
+  void set_neml_record_unit(bool on) { neml_record_unit_ = on; }
+  void set_neml_config(const neml::Config* c) { neml_cfg_ = c; }
   // Loop guard v2, the shared reasoning-layer guard (include/pchie/rl/LoopGuard.h), ON by default.
   // It watches navigation moves; the state key is (cell, doors open). Door attempts do not move the player and are
   // not counted (the identical-retry stop and the failed-actuation retry cover repeated attempts).
@@ -464,6 +475,14 @@ class StageBDoorMaze final {
 
   // Mirror on or off, one apply. No Stage B unsafe rule: this fixture has no pits.
   bool commit_nav(PchStack& stack, StageBDoorGrid& g, int32_t act, StageBDoorResult& out) {
+    const StageBDoorGrid neml_pre = g;  // NEML: committed-step triggers (read-only)
+    int32_t neml_top = -1;
+    int neml_moves = 0;
+    if (!stack.search().puct().nodes.empty()) {
+      const auto& re = stack.search().puct().nodes[0].edges;
+      neml_top = neml::top_prior_token(re);
+      for (const auto& e : re) if (neml::dir_of_action(e.token) != neml::kDirNone) ++neml_moves;
+    }
     if (mirror_log_) {
       MirrorSimFork fork;
       hash_world(g, fork.pre_sha, fork.pre_fnv);
@@ -492,6 +511,10 @@ class StageBDoorMaze final {
       }
     }
     out.actions.push_back(act);
+    neml_trk_.step(neml_pre, act, g, neml_top, neml_moves, int(out.actions.size()) - 1, [](const StageBDoorGrid& c) {
+      for (int k = 0; k < StageBDoorGrid::kDoors; ++k) if (c.adjacent_to_door(k)) return true;
+      return false;
+    });
     return true;
   }
 
@@ -788,7 +811,32 @@ class StageBDoorMaze final {
     }
   }
 
+  // Every run goes through here: the run itself, then the NEML receipt at teardown.
   bool run_common(IModel* model, UnitProposer proposer, void* ctx, StageBDoorResult& out) {
+    neml_trk_.begin(grid_);
+    const bool ok = run_inner(model, proposer, ctx, out);
+    out.neml_events = neml_trk_.rec.all.size();
+    out.neml_forks = neml_trk_.rec.forks;
+    out.neml_dead_ends = neml_trk_.rec.dead_ends;
+    const neml::Config& c = neml_cfg_ ? *neml_cfg_ : neml::process_config();
+    if (neml_record_ && c.record && (model || neml_record_unit_)) {
+      const auto cb = grid_.canonical_bytes();
+      const auto h = Sha256::hash(cb.data(), cb.size());
+      neml::ReceiptInfo info;
+      for (int i = 7; i >= 0; --i) info.maze_key = (info.maze_key << 8) | h[size_t(i)];
+      info.maze_seed = uint32_t(seed_);
+      info.maze_w = grid_.width();
+      info.maze_h = grid_.height();
+      info.path_kind = neml::kPathStageB;
+      info.flags = model ? neml::kFlagModel : 0;
+      const std::string note = out.ok ? std::string("stage b ok") : ("stage b " + out.err);
+      out.neml_receipt_id = neml::write_receipt(c, neml_trk_.rec, int(out.actions.size()),
+                                                out.reached_exit || neml_trk_.exit_seen, note, info, &out.neml_err);
+    }
+    return ok;
+  }
+
+  bool run_inner(IModel* model, UnitProposer proposer, void* ctx, StageBDoorResult& out) {
     out = {};
     lg_.reset();
     StreamAuthSession auth_session(stream_auth_);
@@ -867,6 +915,9 @@ class StageBDoorMaze final {
   int trace_budget_ = 80;          // failure-trace tokens per pass (36-token prompt + 80 < 128)
   UnitRanker ranker_ = nullptr;
   WorldTabu tabu_;
+  bool neml_record_ = true, neml_record_unit_ = false;  // NEML recording (model runs), on by default
+  const neml::Config* neml_cfg_ = nullptr;
+  neml::GridTracker neml_trk_;
 };
 
 }  // namespace pchie

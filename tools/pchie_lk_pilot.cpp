@@ -26,6 +26,7 @@
 //   --settings FILE   copies FILE to <out>/lk_data/config/settings.json (scratch data root only).
 //   The read-back block ids are hashed as LithoKraft.maze_area.v1 (LithoKraft namespace, never a PCHIE hash).
 #include "pchie/HeadlessMaze.h"
+#include "pchie/neml/NemlQuery.h"
 #include "pchie/MazeGrid.h"
 #include "pchie/ScaledPitMaze.h"
 #include "pchie/MirrorSimSideLog.h"
@@ -103,6 +104,11 @@ static bool parse_args(int argc, char** argv, Args& a) {
   for (int i = 1; i < argc; ++i) {
     const std::string k = argv[i];
     auto next = [&](std::string& v) { if (i + 1 < argc) { v = argv[++i]; return true; } return false; };
+    if (const int n = neml::parse_flag(argc, argv, i, neml::process_config()); n != 0) {  // --neml, --neml-reason
+      if (n < 0) return false;
+      i += n - 1;
+      continue;
+    }
     if (k == "--game") { if (!next(a.game)) return false; }
     else if (k == "--out") { if (!next(a.out)) return false; }
     else if (k == "--model") { if (!next(a.model)) return false; }
@@ -163,7 +169,8 @@ int main(int argc, char** argv) {
                  "usage: pchie_lk_pilot --out DIR (--game LithoKraft.exe | --decide-only) [--unit] [--model gguf]\n"
                  "       [--renderer vulkan|gl33|software] [--resolution WxH] [--frame-dump DIR] [--ffmpeg exe]\n"
                  "       [--grant auto|manual] [--grant-timeout s] [--hold-ms ms] [--input-template input.json]\n"
-                 "       [--maze b1|stagea] [--no-vsync] [--settings settings.json]\n");
+                 "       [--maze b1|stagea] [--no-vsync] [--settings settings.json]\n"
+                 "       [--neml on|off|DIR] [--neml-reason on|off]\n");
     return 2;
   }
   fs::create_directories(a.out);
@@ -211,12 +218,29 @@ int main(int argc, char** argv) {
                    : "LOOP GUARD OFF (--loop-guard off): old default behavior");
   say("TESLA %s, attestation %s (verdict Unattested without a TPM quote)", a.stream_auth.tesla ? "ON (default)" : "OFF (--tesla off)",
       a.stream_auth.attest ? "ON (default)" : "OFF (--attest off)");
+  // Episodic memory: recording on by default; the memory prior reads a snapshot taken now (empty ledger = not used,
+  // so the run is the same as with memory off).
+  const neml::Config& ncfg = neml::process_config();
+  neml::Snapshot mem_snap = neml::Snapshot::empty();
+  if (ncfg.memory_prior) mem_snap = neml::Snapshot::take(ncfg);
+  if (!mem_snap.ok) say("NEML: ledger unreadable, memory prior not used");
+  if (ncfg.memory_prior && !mem_snap.runs.empty()) {
+    driver.set_memory(&mem_snap);
+    say("NEML memory prior ON: snapshot of %zu past runs sha256=%s (hashed into the side chain; hashes will differ from the official run)",
+        mem_snap.runs.size(), hex(mem_snap.sha256).c_str());
+  } else {
+    say("NEML memory prior %s", ncfg.memory_prior ? "on, ledger empty: not used" : "OFF (--neml-reason off)");
+  }
+  say("NEML recording %s", ncfg.record ? "ON (default): one receipt at teardown" : "OFF");
   Sha256HashChain side_chain;
   side_chain.reset();
   MazeResult res;
   const double t_dec = now_s();
   const bool dec_ok = a.unit ? driver.run_unit("", &side_chain, res) : driver.run(model, "", &side_chain, res);
   const double dec_s = now_s() - t_dec;
+  if (res.neml_receipt_id) say("NEML receipt run_id=%u events=%zu forks=%d dead_ends=%d memory_nudges=%d", res.neml_receipt_id,
+                               res.neml_events, res.neml_forks, res.neml_dead_ends, res.neml_memory_nudges);
+  else if (ncfg.record && !a.unit) say("NEML receipt not written: %s", res.neml_err.c_str());
   const auto act_bytes = std::vector<uint8_t>(reinterpret_cast<const uint8_t*>(res.actions.data()),
                                               reinterpret_cast<const uint8_t*>(res.actions.data()) + res.actions.size() * sizeof(int32_t));
   const std::string act_sha = hex(Sha256::hash(act_bytes.data(), act_bytes.size()));
