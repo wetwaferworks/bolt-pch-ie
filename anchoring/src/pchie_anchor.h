@@ -7,6 +7,7 @@
 // Labels are never upgraded by anchoring. Nothing here touches any public log or network.
 #pragma once
 #include "pchie/HmacSha256.h"
+#include "pchie/OsRandom.h"
 #include "pchie/RatchetHashChain.h"
 #include "pchie/Sha256.h"
 #include <array>
@@ -22,6 +23,9 @@
 #include <vector>
 
 namespace pchie { namespace anchor {
+
+// Best-effort wipe of secret bytes (volatile writes the compiler may not drop).
+inline void secure_zero(void* p, size_t n) { volatile unsigned char* v = static_cast<volatile unsigned char*>(p); for (size_t i = 0; i < n; ++i) v[i] = 0; }
 using Bytes = std::vector<uint8_t>;
 using H32 = std::array<uint8_t, 32>;
 
@@ -108,21 +112,25 @@ struct Hbs {
 };
 struct HbsKey {
   Bytes I; H32 seed{}; uint32_t next_q = 0; std::vector<H32> T;  // T[1..2^(h+1)-1] tree nodes (public)
-  H32 x(uint32_t q, uint16_t i) const { Bytes b(I); put32(b, q); put16(b, i); b.push_back(0xFF); put(b, seed); return sha(b); }
+  H32 x(uint32_t q, uint16_t i) const { Bytes b(I); put32(b, q); put16(b, i); b.push_back(0xFF); put(b, seed); const H32 r = sha(b); secure_zero(b.data(), b.size()); return r; }
   H32 ots_pub(uint32_t q) const { std::vector<H32> z(Hbs::kP); for (int i = 0; i < Hbs::kP; ++i) z[i] = Hbs::chain(I, q, uint16_t(i), x(q, uint16_t(i)), 0, Hbs::kW); return Hbs::ots_pub_from(I, q, z); }
   void build() { T.assign(2 * Hbs::kLeaves, H32{}); for (uint32_t q = 0; q < Hbs::kLeaves; ++q) T[Hbs::kLeaves + q] = Hbs::leaf(I, q, ots_pub(q)); for (uint32_t r = Hbs::kLeaves - 1; r >= 1; --r) T[r] = Hbs::inner(I, r, T[2 * r], T[2 * r + 1]); }
   Bytes pub() const { Bytes p(I); put(p, T[1]); return p; }  // 16 + 32 bytes
+  // Key material comes from the OS random generator; key generation refuses if it is unavailable.
   static HbsKey generate(const std::string& label) {
-    HbsKey k; std::random_device rd; Bytes ikm; for (int i = 0; i < 64; ++i) ikm.push_back(uint8_t(rd()));
+    HbsKey k; Bytes ikm(64, 0); if (!pchie::os_random_bytes(ikm.data(), ikm.size())) throw std::runtime_error("no OS random generator for key generation");
     H32 prk = hkdf_extract(Bytes(), ikm); Bytes info(label.begin(), label.end());
-    Bytes o = hkdf_expand(prk, info, 48); k.I.assign(o.begin(), o.begin() + 16); std::memcpy(k.seed.data(), o.data() + 16, 32); k.build(); return k;
+    Bytes o = hkdf_expand(prk, info, 48); k.I.assign(o.begin(), o.begin() + 16); std::memcpy(k.seed.data(), o.data() + 16, 32); k.build();
+    secure_zero(ikm.data(), ikm.size()); secure_zero(prk.data(), prk.size()); secure_zero(o.data(), o.size()); return k;
   }
+  // Zero the secret seed once a key copy is no longer needed.
+  void wipe() { secure_zero(seed.data(), seed.size()); }
   static HbsKey from_seed(const Bytes& I, const H32& seed, uint32_t next_q) { HbsKey k; k.I = I; k.seed = seed; k.next_q = next_q; k.build(); return k; }
   // stateful: every signature consumes one leaf; the caller must persist next_q BEFORE releasing the signature
   Bytes sign(const Bytes& msg) {
     if (next_q >= Hbs::kLeaves) throw std::runtime_error("HBS key exhausted (1024 signatures)");
     const uint32_t q = next_q++;
-    Bytes cb(seed.begin(), seed.end()); put32(cb, q); put(cb, std::string("C")); const H32 C = sha(cb);
+    Bytes cb(seed.begin(), seed.end()); put32(cb, q); put(cb, std::string("C")); const H32 C = sha(cb); secure_zero(cb.data(), cb.size());
     const Bytes S = Hbs::qsum(Hbs::msg_hash(I, q, C, msg));
     Bytes sig; put32(sig, q); put(sig, C);
     for (int i = 0; i < Hbs::kP; ++i) put(sig, Hbs::chain(I, q, uint16_t(i), x(q, uint16_t(i)), 0, Hbs::coef(S, i)));

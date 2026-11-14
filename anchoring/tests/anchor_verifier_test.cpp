@@ -198,6 +198,68 @@ int main(int argc, char** argv) try {
     check(tampered.rc == 1 && tampered.has("FAIL witness_policy") && c2.rc == 0 && c2.has("tree_size=") && pass2.rc == 0, "witness policy: a tampered jd-local cosignature FAILS; the next cosign checks consistency from its last head and PASSES");
     check(c3.rc == 0 && four.rc == 0 && four.has("valid=3/4"), "witness policy: open for N witnesses (four listed, threshold 3) PASSES"); }
 
+  // ---- Key substitution: a witness pins the log key and refuses a packet signed under any other key ----
+  { const fs::path log2 = T / "log-substitute"; check(tool({"init", log2.string(), "test-log"}).rc == 0, "setup: a second throwaway log with the same log id and its own key");
+    Out e2 = tool({"emit", log2.string(), "--run-id", "substitute", "--label", "Scratch", "--weights", W, "--chain-file", v1[0].string(), "--emitted", EMIT});
+    const fs::path ps = T / "packet-substitute.txt", cs = T / "cosig-substitute.txt"; Out pk = tool({"witness-packet", log2.string(), "remote-test", ps.string()});
+    Out sub = tool({"witness-cosign", wremote.string(), "remote-test", ps.string(), cs.string()}); show("cosign a packet from a log with a different key", sub);
+    const bool pinned = fs::exists(wremote / "trusted_log_pub.txt") && trim(slurp(wremote / "trusted_log_pub.txt")) == trim(slurp(log / "keys" / "public.key"));
+    check(e2.rc == 0 && pk.rc == 0 && sub.rc == 1 && sub.has("LOG KEY CHANGED") && !fs::exists(cs) && pinned,
+          "key substitution: the witness pinned the log key on first contact and refuses a packet under a different key");
+    // Pinned ahead of time with witness-trust: refused on first contact too; the right log still cosigns.
+    const fs::path wf = T / "witness-pinned-ahead"; tool({"witness-keygen", wf.string()});
+    Out tr = tool({"witness-trust", wf.string(), trim(slurp(log / "keys" / "public.key"))});
+    const fs::path pg = T / "packet-pinned-good.txt", pb = T / "packet-pinned-bad.txt";
+    tool({"witness-packet", log2.string(), "pinned-ahead", pb.string()}); tool({"witness-packet", log.string(), "pinned-ahead", pg.string()});
+    Out bad = tool({"witness-cosign", wf.string(), "pinned-ahead", pb.string(), (T / "cosig-pinned-bad.txt").string()});
+    Out good = tool({"witness-cosign", wf.string(), "pinned-ahead", pg.string(), (T / "cosig-pinned-good.txt").string()});
+    Out retr = tool({"witness-trust", wf.string(), trim(slurp(log2 / "keys" / "public.key"))});
+    check(tr.rc == 0 && bad.rc == 1 && bad.has("LOG KEY CHANGED") && good.rc == 0 && retr.rc != 0,
+          "key substitution: a key pinned with witness-trust refuses another log on first contact, accepts its own, and cannot be silently re-pinned");
+    // Witness state from before pinning: a different key is adopted only if it signed the head already held.
+    const fs::path wl = T / "witness-legacy"; fs::copy(wprod, wl, fs::copy_options::recursive); fs::remove(wl / "trusted_log_pub.txt");
+    const fs::path pl2 = T / "packet-legacy.txt"; tool({"witness-packet", log2.string(), "cortana-producer", pl2.string()});
+    Out leg = tool({"witness-cosign", wl.string(), "cortana-producer", pl2.string(), (T / "cosig-legacy.txt").string()});
+    check(leg.rc == 1 && leg.has("LOG KEY CHANGED"), "key substitution: a witness with held state but no pin refuses a key that did not sign its held head"); }
+
+  // ---- Witness ids are names, not paths ----
+  { Out a = tool({"witness-cosign", wremote.string(), "../escape", (T / "witness-packet-2.txt").string(), (T / "cosig-escape.txt").string()});
+    Out b = tool({"emit", log.string(), "--run-id", "bad-id", "--label", "Scratch", "--weights", W, "--chain-file", v1[0].string(), "--witness-dir", wprod.string(), "--witness-id", "a/b", "--emitted", EMIT});
+    Out c = tool({"witness-packet", log.string(), std::string(65, 'w'), (T / "packet-long-id.txt").string()});
+    Out d = tool({"cosign-local", log.string(), wprod.string(), ".hidden"});
+    check(a.rc != 0 && b.rc != 0 && c.rc != 0 && d.rc != 0 && !fs::exists(T / "cosig-escape.txt") && !fs::exists(T / "escape"),
+          "witness ids: path separators, '..', leading dots and over-long ids are refused before any file is touched");
+    check(witness_id_ok("cortana-producer") && witness_id_ok("jd-local") && witness_id_ok("server_a.2") && !witness_id_ok("") && !witness_id_ok("a\\b") && !witness_id_ok("-x") && !witness_id_ok("a..b"),
+          "witness ids: the allowlist accepts the ids in use and rejects the rest"); }
+
+  // ---- Concurrent signing never reuses a one-time leaf ----
+  { const fs::path kd = T / "concurrent-key"; fs::create_directories(kd); keygen(kd, "pchie.anchor.test.concurrent");
+    const fs::path kp = kd / "signing.key"; const Bytes pub = unhex(trim(slurp(kd / "public.key")));
+    const int threads = 8, per = 4; std::vector<std::vector<Bytes>> sigs(threads); std::vector<std::vector<std::string>> msgs(threads); std::atomic<int> errors{0};
+    std::vector<std::thread> pool;
+    for (int t = 0; t < threads; ++t) pool.emplace_back([&, t] { for (int i = 0; i < per; ++i) { try { std::string m = "concurrent " + std::to_string(t) + "/" + std::to_string(i);
+          sigs[t].push_back(sign_persist(kp, m)); msgs[t].push_back(m); } catch (...) { ++errors; } } });
+    for (auto& th : pool) th.join();
+    std::set<uint32_t> qs; bool all_verify = true; size_t n = 0;
+    for (int t = 0; t < threads; ++t) for (size_t i = 0; i < sigs[t].size(); ++i) { const Bytes& sg = sigs[t][i]; ++n;
+      qs.insert((uint32_t(sg[0]) << 24) | (uint32_t(sg[1]) << 16) | (uint32_t(sg[2]) << 8) | uint32_t(sg[3]));
+      all_verify &= hbs_verify(pub, Bytes(msgs[t][i].begin(), msgs[t][i].end()), sg); }
+    HbsKey after = load_key(kp); const uint32_t next_q = after.next_q; after.wipe();
+    bool no_temp = true; for (auto& e : fs::directory_iterator(kd)) { const std::string nm = e.path().filename().string(); no_temp &= nm.find(".tmp") == std::string::npos; }
+    std::cout << "  -- concurrent signing: " << n << " signatures, " << qs.size() << " distinct leaves, next_q=" << next_q << ", errors=" << errors.load() << "\n";
+    check(errors == 0 && n == size_t(threads * per) && qs.size() == n && next_q == uint32_t(n) && all_verify && no_temp,
+          "concurrent signing: 8 threads x 4 signatures under the key lock use 32 distinct leaves, all verify, next_q = 32, no temp files left"); }
+
+  // ---- An exhausted key refuses before it reserves anything ----
+  { const fs::path kd = T / "exhausted-key"; fs::create_directories(kd); keygen(kd, "pchie.anchor.test.exhausted");
+    const fs::path kp = kd / "signing.key";
+    { HbsKey k = load_key(kp); k.next_q = Hbs::kLeaves; save_key(kp, k); k.wipe(); }
+    const std::string before_sha = file_sha(kp);
+    bool threw = false; try { sign_persist(kp, "after exhaustion"); } catch (const std::exception&) { threw = true; }
+    HbsKey after = load_key(kp); const uint32_t nq = after.next_q; after.wipe();
+    check(threw && nq == Hbs::kLeaves && file_sha(kp) == before_sha,
+          "exhausted key: signing refuses with every leaf used, and the key file is left exactly as it was"); }
+
   // ---- Neutrality: anchoring never changes run artifacts, and the v1 record form is byte-for-byte the old one ----
   { bool same = true; for (auto& kv : before) same &= file_sha(kv.first) == kv.second;
     AnchorRecord a; a.run_id = "golden-run"; a.label = "Scratch"; a.weights_sha256 = std::string(64, 'a'); a.chain_head_sha256 = std::string(64, 'b'); a.chain_length = 3; a.prev_anchor_sha256 = std::string(64, '0'); a.emitted_utc = "2026-11-13T00:00:00Z";

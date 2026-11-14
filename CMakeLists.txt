@@ -242,13 +242,13 @@ add_test(NAME pchie_tesla_stream COMMAND pchie_tesla_stream_test --watcher $<TAR
 
 # Transparency anchoring side tool and its checks. The tool reads finished-run artifacts; no run links it.
 # The verifier test makes throwaway keys and logs under the build folder and removes them on a clean pass.
-add_executable(pchie_anchor anchoring/src/pchie_anchor.cpp)
+add_executable(pchie_anchor anchoring/src/pchie_anchor.cpp anchoring/src/pchie_anchor_fs.cpp)
 target_link_libraries(pchie_anchor PRIVATE pchie_core)
 add_executable(pchie_anchor_unit_test anchoring/tests/anchor_unit.cpp)
 target_include_directories(pchie_anchor_unit_test PRIVATE anchoring/src)
 target_link_libraries(pchie_anchor_unit_test PRIVATE pchie_core)
 add_test(NAME pchie_anchor_unit COMMAND pchie_anchor_unit_test)
-add_executable(pchie_anchor_verifier_test anchoring/tests/anchor_verifier_test.cpp)
+add_executable(pchie_anchor_verifier_test anchoring/tests/anchor_verifier_test.cpp anchoring/src/pchie_anchor_fs.cpp)
 target_include_directories(pchie_anchor_verifier_test PRIVATE anchoring/src)
 target_link_libraries(pchie_anchor_verifier_test PRIVATE pchie_core)
 add_test(NAME pchie_anchor_verifier COMMAND pchie_anchor_verifier_test ${CMAKE_CURRENT_BINARY_DIR}/anchor-verifier-tmp ${CMAKE_CURRENT_SOURCE_DIR}/anchoring/policy)
