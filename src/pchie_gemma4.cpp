@@ -154,11 +154,22 @@ bool Gemma4Tokenizer::load(const GgufFile& g, std::string& err) {
         }
     std::sort(specials_.begin(), specials_.end(), [](const std::string& a, const std::string& b) {
         return a.size() != b.size() ? a.size() > b.size() : a < b; });
-    auto num = [&](const char* k, int32_t d) { auto f = g.meta_num.find(k); return f == g.meta_num.end() ? d : int32_t(f->second); };
+    // Token ids come from the file: a value that is not a whole number in int32 range is refused rather than cast.
+    bool ids_ok = true;
+    auto num = [&](const char* k, int32_t d) {
+        auto f = g.meta_num.find(k);
+        if (f == g.meta_num.end()) return d;
+        const double v = f->second;
+        if (!(v >= -1.0 && v <= 2147483647.0) || v != double(int64_t(v))) { ids_ok = false; return d; }
+        return int32_t(v); };
     bos = num("tokenizer.ggml.bos_token_id", 2); eos = num("tokenizer.ggml.eos_token_id", 1);
+    if (!ids_ok || bos < 0 || size_t(bos) >= tokens_.size() || eos < 0 || size_t(eos) >= tokens_.size()) {
+        err = "tokenizer bos or eos id outside the vocabulary"; return false;
+    }
     add_bos = num("tokenizer.ggml.add_bos_token", 0) != 0;  // BOS policy
     for (int32_t id : {bos, eos, num("tokenizer.ggml.unknown_token_id", 3), num("tokenizer.ggml.padding_token_id", 0)})
         if (id >= 0 && size_t(id) < special_mask_.size()) special_mask_[size_t(id)] = 1;
+    if (!ids_ok) { err = "tokenizer special token id out of range"; return false; }
     return true;
 }
 size_t Gemma4Tokenizer::special_count() const noexcept {
@@ -246,7 +257,12 @@ std::vector<int32_t> Gemma4Tokenizer::encode_with_bos(const std::string& text) c
 std::string Gemma4Tokenizer::decode(int32_t id) const {
     if (id < 0 || size_t(id) >= tokens_.size()) return "";
     const std::string& t = tokens_[size_t(id)];
-    if (t.size() == 6 && t.compare(0, 3, "<0x") == 0 && t[5] == '>') return std::string(1, char(std::stoi(t.substr(3, 2), nullptr, 16)));
+    if (t.size() == 6 && t.compare(0, 3, "<0x") == 0 && t[5] == '>') {
+        // Byte-fallback piece. Parsed by hand: a malformed piece in the vocabulary must not throw.
+        auto hexv = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
+        const int hi = hexv(t[3]), lo = hexv(t[4]);
+        if (hi >= 0 && lo >= 0) return std::string(1, char(hi * 16 + lo));
+    }
     std::string r;
     for (size_t i = 0; i < t.size();) {
         if (t.compare(i, 3, "\xE2\x96\x81") == 0) { r += ' '; i += 3; } else r += t[i++];
@@ -264,17 +280,27 @@ bool Gemma4Model::load(const std::string& path, std::string& err) {
         auto f = gguf_.meta_num.find("gemma4." + k);
         if (f == gguf_.meta_num.end()) throw std::runtime_error("missing gemma4." + k);
         return f->second; };
+    // Sizes come from an untrusted file: each must be a whole number in a sane range before it sizes a
+    // buffer or an index (a huge or negative double cast to int is undefined behaviour).
+    auto I = [&](const std::string& k, int64_t lo, int64_t hi) -> int {
+        const double v = N(k);
+        if (!(v >= double(lo) && v <= double(hi)) || v != double(int64_t(v))) throw std::runtime_error("gemma4." + k + " out of range");
+        return int(v); };
     try {
-        cfg_.n_layer = int(N("block_count")); cfg_.d_model = int(N("embedding_length"));
-        cfg_.d_ff = int(N("feed_forward_length")); cfg_.d_ple = int(N("embedding_length_per_layer_input"));
-        cfg_.n_head = int(N("attention.head_count")); cfg_.n_head_kv = int(N("attention.head_count_kv"));
-        cfg_.hd_global = int(N("attention.key_length")); cfg_.hd_swa = int(N("attention.key_length_swa"));
-        cfg_.n_rot_global = int(N("rope.dimension_count")); cfg_.n_rot_swa = int(N("rope.dimension_count_swa"));
-        cfg_.window = int(N("attention.sliding_window")); cfg_.shared_kv = int(N("attention.shared_kv_layers"));
+        cfg_.n_layer = I("block_count", 1, 1024); cfg_.d_model = I("embedding_length", 32, 1 << 16);
+        cfg_.d_ff = I("feed_forward_length", 1, 1 << 20); cfg_.d_ple = I("embedding_length_per_layer_input", 1, 1 << 16);
+        cfg_.n_head = I("attention.head_count", 1, 1024); cfg_.n_head_kv = I("attention.head_count_kv", 1, 1024);
+        cfg_.hd_global = I("attention.key_length", 2, 4096); cfg_.hd_swa = I("attention.key_length_swa", 2, 4096);
+        cfg_.n_rot_global = I("rope.dimension_count", 2, 1024); cfg_.n_rot_swa = I("rope.dimension_count_swa", 2, 1024);
+        cfg_.window = I("attention.sliding_window", 1, 1 << 24); cfg_.shared_kv = I("attention.shared_kv_layers", 0, cfg_.n_layer - 1);
+        if (cfg_.n_head % cfg_.n_head_kv != 0) throw std::runtime_error("head_count is not a multiple of head_count_kv");
+        // rope() rotates n_rot dims of each head in pairs, with a 512-entry table on the stack.
+        if (cfg_.n_rot_global % 2 || cfg_.n_rot_global > cfg_.hd_global || cfg_.n_rot_swa % 2 || cfg_.n_rot_swa > cfg_.hd_swa)
+            throw std::runtime_error("rope dimension count does not fit the head size");
         cfg_.eps = float(N("attention.layer_norm_rms_epsilon"));
         cfg_.rope_base = float(N("rope.freq_base")); cfg_.rope_base_swa = float(N("rope.freq_base_swa"));
         cfg_.softcap = float(N("final_logit_softcapping"));
-        if (int(N("attention.value_length")) != cfg_.hd_global || int(N("attention.value_length_swa")) != cfg_.hd_swa)
+        if (I("attention.value_length", 1, 4096) != cfg_.hd_global || I("attention.value_length_swa", 1, 4096) != cfg_.hd_swa)
             throw std::runtime_error("value_length != key_length is not supported");
     } catch (const std::exception& e) { err = e.what(); return false; }
     const auto& pat = gguf_.meta_num_arr["gemma4.attention.sliding_window_pattern"];
@@ -292,20 +318,43 @@ bool Gemma4Model::load(const std::string& path, std::string& err) {
         cfg_.kv_source[size_t(l)] = src;
     }
 
-    const uint8_t* base = map_.data() + gguf_.data_offset;
+    // The mapping must be the file the directory was read from, and every tensor must lie inside it,
+    // before any pointer into the mapping is formed.
+    if (!map_.data() || map_.size() != gguf_.file_size || gguf_.data_offset > map_.size()) {
+        err = "model file changed or is shorter than its GGUF directory"; return false;
+    }
+    const uint64_t data_size = map_.size() - gguf_.data_offset;
     auto T = [&](const std::string& name, QTensor& q) {
         const GgufTensorInfo* t = gguf_.find(name);
         if (!t) throw std::runtime_error("missing tensor " + name);
-        q.data = base + t->offset; q.type = t->type; q.ne0 = t->dims[0]; q.ne1 = t->dims.size() > 1 ? t->dims[1] : 1;
+        if (t->dims.empty() || t->dims.size() > 2) throw std::runtime_error("unsupported tensor rank " + name);
+        if (!t->size_known || t->nbytes == 0) throw std::runtime_error("unsupported tensor type " + name);
+        if (t->offset > data_size || t->nbytes > data_size - t->offset) throw std::runtime_error("tensor outside the file " + name);
+        q.data = map_.data() + gguf_.data_offset + t->offset; q.type = t->type; q.ne0 = t->dims[0]; q.ne1 = t->dims.size() > 1 ? t->dims[1] : 1;
     };
     auto F = [&](const std::string& name, uint64_t n) -> const float* {
         QTensor q; T(name, q);
         if (q.type != 0 || q.ne0 * q.ne1 != n) throw std::runtime_error("bad f32 tensor " + name);
         return static_cast<const float*>(q.data);
     };
+    // The forward pass sizes its buffers from the config, and matvec reads ne0 inputs and writes ne1 outputs.
+    // Every weight must therefore have exactly the shape the config implies, and a type matvec can read.
+    auto M = [&](const QTensor& q, uint64_t ne0, uint64_t ne1, const std::string& name) {
+        if (q.type != 8 && q.type != 12 && q.type != 14 && q.type != 30) throw std::runtime_error("unsupported weight type " + name);
+        if (q.ne0 != ne0 || q.ne1 != ne1) throw std::runtime_error("weight shape does not match the config " + name);
+    };
     try {
         T("token_embd.weight", tok_embd_); T("per_layer_token_embd.weight", ple_embd_); T("per_layer_model_proj.weight", ple_proj_);
+        // embed() reads Q8_0 rows of both embedding tables by token id.
+        if (tok_embd_.ne1 == 0 || tok_embd_.ne1 > (1u << 24)) throw std::runtime_error("token_embd vocab size out of range");
         cfg_.n_vocab = int(tok_embd_.ne1);
+        {
+            const uint64_t D = uint64_t(cfg_.d_model), V = uint64_t(cfg_.n_vocab), NLP = uint64_t(cfg_.n_layer) * uint64_t(cfg_.d_ple);
+            if (tok_embd_.type != 8 || tok_embd_.ne0 != D) throw std::runtime_error("token_embd must be Q8_0 with embedding_length columns");
+            if (ple_embd_.type != 8 || ple_embd_.ne0 != NLP || ple_embd_.ne1 != V) throw std::runtime_error("per_layer_token_embd shape does not match the config");
+            M(ple_proj_, D, NLP, "per_layer_model_proj.weight");
+            if (tok_.vocab_size() > V) throw std::runtime_error("tokenizer has more tokens than token_embd has rows");
+        }
         ple_proj_norm_ = F("per_layer_proj_norm.weight", uint64_t(cfg_.d_ple));
         out_norm_ = F("output_norm.weight", uint64_t(cfg_.d_model));
         rope_freqs_ = F("rope_freqs.weight", uint64_t(cfg_.n_rot_global / 2));
@@ -325,6 +374,11 @@ bool Gemma4Model::load(const std::string& path, std::string& err) {
             L.post_ffw_norm = F(p + "post_ffw_norm.weight", D); L.post_norm = F(p + "post_norm.weight", D);
             L.out_scale = F(p + "layer_output_scale.weight", 1)[0];
             if (L.wq.ne1 != uint64_t(cfg_.n_head) * hd) throw std::runtime_error("attn_q shape " + p);
+            const uint64_t QD = uint64_t(cfg_.n_head) * hd, KD = uint64_t(cfg_.n_head_kv) * hd, FF = uint64_t(cfg_.d_ff), P = uint64_t(cfg_.d_ple);
+            M(L.wq, D, QD, p + "attn_q.weight"); M(L.wo, QD, D, p + "attn_output.weight");
+            if (l < cfg_.n_layer_kv) { M(L.wk, D, KD, p + "attn_k.weight"); M(L.wv, D, KD, p + "attn_v.weight"); }
+            M(L.gate, D, FF, p + "ffn_gate.weight"); M(L.up, D, FF, p + "ffn_up.weight"); M(L.down, FF, D, p + "ffn_down.weight");
+            M(L.inp_gate, D, P, p + "inp_gate.weight"); M(L.proj, P, D, p + "proj.weight");
         }
     } catch (const std::exception& e) { err = e.what(); return false; }
     return true;
@@ -417,6 +471,7 @@ void Gemma4Model::begin_token(Branch& br) {
 
 void Gemma4Model::embed(int32_t token, float* x, float* ple_raw) const {
     const int D = cfg_.d_model, P = cfg_.d_ple, NL = cfg_.n_layer;
+    if (token < 0 || token >= cfg_.n_vocab) throw std::out_of_range("embed: token id outside the vocabulary");
     dequant_q8_0_row(static_cast<const BlockQ8_0W*>(tok_embd_.data) + size_t(token) * size_t(D / 32), x, D);
     const float emb_scale = std::sqrt(float(D));
     for (int i = 0; i < D; ++i) x[i] = x[i] * emb_scale;
