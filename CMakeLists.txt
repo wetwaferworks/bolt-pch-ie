@@ -255,6 +255,17 @@ add_executable(pchie_rl_l1l2_test tests/rl/pchie_rl_l1l2_test.cpp)
 target_link_libraries(pchie_rl_l1l2_test PRIVATE pchie_core)
 add_test(NAME pchie_rl_l1l2 COMMAND pchie_rl_l1l2_test --unit)
 
+# Research layers (opt-in, --research-* flags; all off by default). A separate library, so pchie_core and
+# every existing program build exactly as before. No model, about a second.
+add_library(pchie_research STATIC
+  src/research/ResearchFlags.cpp src/research/ExperienceMap.cpp src/research/GoExplore.cpp
+  src/research/ConstraintSolver.cpp src/research/StepScorer.cpp src/research/TreeOfThoughts.cpp
+  src/research/Reflexion.cpp src/research/FrozenDynamics.cpp src/research/ContextBudget.cpp)
+target_link_libraries(pchie_research PUBLIC pchie_core)
+add_executable(pchie_research_test tests/research/pchie_research_test.cpp)
+target_link_libraries(pchie_research_test PRIVATE pchie_research)
+add_test(NAME pchie_research COMMAND pchie_research_test --unit)
+
 # Readers for finished planner-comparison and query-before-plan run logs
 # (stop-and-report rule, L2 engagement) and the L2 store path guard. No model, seconds.
 add_executable(pchie_rl_run_compare_test tests/rl/pchie_rl_run_compare_test.cpp)

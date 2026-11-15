@@ -4,6 +4,10 @@ All notable changes to Bolt PCHIE are listed here, newest first.
 
 ## Unreleased
 
+### Added
+
+- **Research layers (opt-in, off by default).** Go-Explore as L7, an exact constraint peer beside L6 with an optional pinned Z3, a step scorer, Tree of Thoughts, Reflexion lesson receipts (never injected into the prompt) and a MuZero-style frozen dynamics look-ahead, each behind its own `--research-*` flag in a separate `pchie_research` library. `pchie_core`, the `--rl-*` flags and every existing hash are unchanged. Also the 2048 context test path (`--research-ctx`, `experiments/next-runs/run_context_compare.ps1`). See [experiments/research-layers.md](experiments/research-layers.md).
+
 ### Security
 
 These fixes come from our first security review, by Gizmo (ChatGPT Luna 6). Each finding was checked against the code, fixed, and covered by new tests. See [SECURITY.md](SECURITY.md) for the details and the known limits.

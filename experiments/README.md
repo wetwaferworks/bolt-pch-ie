@@ -6,6 +6,6 @@ The launchers under `next-runs/` take the model path from the environment: set `
 
 | Folder | Contents |
 |---|---|
-| `next-runs` | Launchers for the planner budget comparison (`run_planner_budget_comparison.ps1`), query-before-plan (`run_query_before_plan.ps1`), and the Stage B standard pair (`run_stageb_pair.ps1`). Commands, durations and what each result shows: `docs/notes/next-runs.md`. |
+| `next-runs` | Launchers for the planner budget comparison (`run_planner_budget_comparison.ps1`), query-before-plan (`run_query_before_plan.ps1`), the Stage B standard pair (`run_stageb_pair.ps1`), and the 1024 vs 2048 context comparison (`run_context_compare.ps1`). Commands, durations and what each result shows: `docs/notes/next-runs.md`. |
 
 Findings are summarized in `docs/reports/` and in the researcher guide. The older one-off lab scripts are not included.
