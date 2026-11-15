@@ -1,5 +1,6 @@
 // Context budget for the 1024 vs 2048 test path. At 1024 tokens Little Nemo gets the 32x12 fovea for
-// forward, left and right; at 2048 he gets a 40x22 forward view plus 24x9 left and right side views.
+// forward, left and right; at 2048 he gets the 40x22 full forward view plus the 32x12 foveas left and right
+// (both are sizes vision.capture_ascii gives).
 // The token estimate is deliberately pessimistic for ASCII art (one token per two characters plus
 // one per row), so a plan that "fits" here fits with the real tokenizer too.
 #pragma once

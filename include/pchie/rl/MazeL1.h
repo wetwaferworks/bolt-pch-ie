@@ -31,6 +31,7 @@
 #include "pchie/rl/ForkScore.h"
 #include "pchie/rl/LoopGuard.h"
 #include "pchie/rl/PlanMemory.h"
+#include "pchie/rl/ResearchAdvisor.h"
 #include "pchie/rl/RlCommon.h"
 #include "pchie/rl/RlFlags.h"
 #include "pchie/rl/RlSideChain.h"
@@ -60,6 +61,7 @@ struct MazeTraits {
   std::function<std::string(const G&, uint32_t)> obs_text;  // untrusted observation text
   std::function<uint64_t(const G&)> state_key;              // loop guard state key (empty: no root taboo)
   std::function<bool(const G&)> unsafe;                     // loop guard cautious landing check (empty: none)
+  std::function<ResearchView(const G&)> research_view;      // what he sees, for research advisors (empty: none)
 };
 
 struct MazeRlStats {
@@ -73,6 +75,7 @@ struct MazeRlStats {
   uint64_t tuples_sealed = 0;
   uint32_t max_ctx_used = 0;
   uint64_t tree_digest = 0;        // running mix of per-decision PUCT digests
+  uint64_t research_proposals = 0, research_applied = 0, research_rejected = 0, research_capped = 0;
 };
 
 inline const char* action_word(MazeAction a) {
@@ -103,6 +106,7 @@ class MazeRl final {
   uint32_t max_ctx = 256;
   std::function<void(MazeRl&)> on_decision;  // test hook (e.g. mid-run append attempt)
   LoopGuard* loop_guard = nullptr;           // the driver's guard (set by the driver before each decide)
+  IResearchAdvisor* research = nullptr;      // opt-in research layers (--research-*); null = unchanged
 
   RlSideChain tuple_chain;
   RlSideChain qbp_chain;
@@ -121,8 +125,10 @@ class MazeRl final {
     return flags.fork_score || flags.belief || flags.vision_only || flags.options || flags.symbolic_peer ||
            flags.symbolic_weight_q20 != 0 || flags.verifier;
   }
+  bool research_on() const { return research && research->engaged(); }
   bool engaged() const {
-    return force_rl_loop || prior_model() || value_src() != ValueSrc::Oracle || flags.qbp || unwired_flag_on();
+    return force_rl_loop || prior_model() || value_src() != ValueSrc::Oracle || flags.qbp || unwired_flag_on() ||
+           research_on();
   }
   bool needs_model() const { return prior_model() || value_src() == ValueSrc::Model; }
 
@@ -134,6 +140,7 @@ class MazeRl final {
     }
   }
   void end_run() {
+    if (research_on()) research->end_run();
     if (memory) memory->set_run_live(false);
     if (model && have_hdr_) {
       model->release(hdr_);
@@ -241,6 +248,10 @@ class MazeRl final {
     // L2: query before plan. Hit = proposal (prior boost) after gate + legality.
     std::array<uint8_t, 32> sit{};
     if (flags.qbp && memory) l2_query(task_id, obs_tokens, g, tr, prefix, stack.leaf().gate(), edges, sit);
+    if (research_on() && !research_adjust(task_id, g, tr, prefix, stack.leaf().gate(), edges, err)) {
+      release_dec();
+      return false;
+    }
     stack.search().expand(0, std::move(edges), chain);
 
     const std::vector<float> no_logits;
@@ -334,9 +345,65 @@ class MazeRl final {
     const uint64_t d = stack.search().digest();
     st.tree_digest = st.tree_digest ? hash_mix64(st.tree_digest, d) : hash_mix64(FNV_OFFSET, d);
     seal(task_id, obs_tokens, stack.search().puct(), act);
+    if (research_on()) {
+      G after = g;
+      (void)tr.apply(after, static_cast<MazeAction>(act));
+      research->decided(act, tr.research_view(after));
+    }
     ++st.decisions;
     release_dec();
     if (on_decision) on_decision(*this);
+    return true;
+  }
+
+  // Research layers: caps first (they only lower priors), then proposals (legal + gate, like an L2 hit).
+  template <class G>
+  bool research_adjust(uint32_t task_id, const G& g, const MazeTraits<G>& tr, const std::vector<int32_t>& prefix,
+                       const PchGate& gate, std::vector<PuctEdge>& edges, std::string& err) {
+    if (!tr.research_view) {
+      err = "rl: research layers need a view this maze does not provide (fail closed)";
+      return false;
+    }
+    std::vector<int32_t> legal;
+    for (const PuctEdge& e : edges) legal.push_back(e.token);
+    std::vector<ResearchProposal> props;
+    std::vector<ResearchCap> caps;
+    if (!research->advise(task_id, tr.research_view(g), legal, props, caps, err)) return false;
+    for (const ResearchCap& c : caps)
+      for (PuctEdge& e : edges)
+        if (e.token == c.token) {
+          int64_t s = c.score_q20 < 0 ? 0 : (c.score_q20 > kQ20 ? kQ20 : c.score_q20);
+          const uint64_t capped = (uint64_t(e.prior_q20) * uint64_t(s + kQ20)) >> 21;
+          if (capped < e.prior_q20) {
+            e.prior_q20 = uint32_t(capped);
+            ++st.research_capped;
+          }
+        }
+    for (const ResearchProposal& p : props) {
+      ++st.research_proposals;
+      PuctEdge* hit = nullptr;
+      for (PuctEdge& e : edges)
+        if (e.token == p.token) hit = &e;
+      bool ok = hit != nullptr && hit->prior_q20 > 0;  // a gate-rejected edge (prior 0) stays rejected
+      if (ok) {
+        G probe = g;
+        ok = tr.apply(probe, static_cast<MazeAction>(p.token));
+      }
+      if (ok) {
+        std::vector<int32_t> pp = prefix;
+        pp.push_back(p.token);
+        ok = gate.Pass(ProposalTokens::from_proposal(pp));
+      }
+      const int32_t share = p.share_q20 < 0 ? 0 : (p.share_q20 > kQ20 ? kQ20 : p.share_q20);
+      if (!ok || share == 0) {
+        ++st.research_rejected;
+        continue;
+      }
+      const uint64_t keep = uint64_t(kQ20 - share);
+      for (PuctEdge& e : edges) e.prior_q20 = uint32_t((uint64_t(e.prior_q20) * keep) >> 20);
+      hit->prior_q20 += uint32_t(share);
+      ++st.research_applied;
+    }
     return true;
   }
 

@@ -8,17 +8,18 @@ namespace research {
 
 bool ResearchFlags::any_on() const {
   return go_explore || smt || !smt_binary.empty() || step_scorer || tree_of_thoughts || reflexion || lookahead ||
-         ctx != 1024;
+         !dynamics.empty() || !dynamics_sha.empty() || !log.empty() || !lessons.empty() || ctx != 1024;
 }
 
 std::string ResearchFlags::identity_line() const {
   std::ostringstream o;
-  o << "research.v1 go_explore=" << int(go_explore) << " smt=" << int(smt)
+  o << "research.v2 go_explore=" << int(go_explore) << " smt=" << int(smt)
     << " smt_binary=" << (smt_binary.empty() ? "-" : "set") << " step_scorer=" << int(step_scorer)
     << " step_scorer_mode=" << (step_scorer_mode == ScorerMode::Enforce ? "enforce" : "record")
     << " tot=" << int(tree_of_thoughts) << " tot_breadth=" << tot_breadth << " tot_depth=" << tot_depth
     << " reflexion=" << int(reflexion) << " lookahead=" << int(lookahead) << " lookahead_depth=" << lookahead_depth
-    << " ctx=" << ctx;
+    << " dynamics=" << (dynamics.empty() ? "-" : dynamics_sha.substr(0, 16)) << " log=" << (log.empty() ? "-" : "set")
+    << " lessons=" << (lessons.empty() ? "-" : "set") << " ctx=" << ctx;
   return o.str();
 }
 
@@ -78,6 +79,18 @@ ResearchParseResult parse_research_flags(const std::vector<std::string>& args) {
     else if (take(a, "--research-lookahead", v)) {
       if (!small_number(v, 1, 6, r.flags.lookahead_depth)) return fail("bad --research-lookahead (1..6)");
       r.flags.lookahead = true;
+    } else if (take(a, "--research-dynamics-sha", v)) {
+      if (v.size() != 64) return fail("bad --research-dynamics-sha (want 64 hex digits)");
+      r.flags.dynamics_sha = v;
+    } else if (take(a, "--research-dynamics", v)) {
+      if (v.empty()) return fail("--research-dynamics needs a path");
+      r.flags.dynamics = v;
+    } else if (take(a, "--research-log", v)) {
+      if (v.empty()) return fail("--research-log needs a path");
+      r.flags.log = v;
+    } else if (take(a, "--research-lessons", v)) {
+      if (v.empty()) return fail("--research-lessons needs a path");
+      r.flags.lessons = v;
     } else if (take(a, "--research-ctx", v)) {
       if (v == "1024") r.flags.ctx = 1024;
       else if (v == "2048") r.flags.ctx = 2048;
@@ -86,6 +99,9 @@ ResearchParseResult parse_research_flags(const std::vector<std::string>& args) {
       return fail("unknown research flag: " + a);
     }
   }
+  if (r.flags.lookahead && (r.flags.dynamics.empty() || r.flags.dynamics_sha.empty()))
+    return fail("--research-lookahead needs --research-dynamics and --research-dynamics-sha");
+  if (r.flags.reflexion && r.flags.lessons.empty()) return fail("--research-reflexion needs --research-lessons");
   return r;
 }
 

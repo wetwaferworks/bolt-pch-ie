@@ -7,6 +7,8 @@ All notable changes to Bolt PCHIE are listed here, newest first.
 ### Added
 
 - **Research layers (opt-in, off by default).** Go-Explore as L7, an exact constraint peer beside L6 with an optional pinned Z3, a step scorer, Tree of Thoughts, Reflexion lesson receipts (never injected into the prompt) and a MuZero-style frozen dynamics look-ahead, each behind its own `--research-*` flag in a separate `pchie_research` library. `pchie_core`, the `--rl-*` flags and every existing hash are unchanged. Also the 2048 context test path (`--research-ctx`, `experiments/next-runs/run_context_compare.ps1`). See [experiments/research-layers.md](experiments/research-layers.md).
+- **Research layers in the maze runs.** `pchie_rl_l1l2_test --maze b1|stagea` takes Go-Explore, the look-ahead (with a pinned frozen model), the step scorer and Reflexion through `--research-*` flags. They can only move or lower prior shares on legal edges, and they write their own side chain. Without research flags the runs and every hash are unchanged. New `pchie_research_tool` (freeze a model from side logs, verify a side chain).
+- **ASCII views for the context comparison.** `pchie_lk_visnav --obs ascii[=1024|2048]` adds verified Nemo View pictures (`vision.capture_ascii`) to the live view, with their own side chain. Off by default.
 
 ### Security
 

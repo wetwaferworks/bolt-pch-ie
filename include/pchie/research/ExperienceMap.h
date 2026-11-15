@@ -31,6 +31,10 @@ class ExperienceMap {
   /// Record that he is standing here (and what he sees at his feet).
   void stand(const SelfObservation& o);
 
+  /// Record what he sees from (x, y): bit m of open_mask set means move m is open right now.
+  /// Sight overrides earlier knowledge (a door that opened shows as open).
+  void sense(int32_t x, int32_t y, uint8_t open_mask);
+
   /// Record the outcome of a move tried from (x, y).
   void tried(int32_t x, int32_t y, int move, bool moved);
 

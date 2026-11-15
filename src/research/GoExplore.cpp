@@ -125,7 +125,7 @@ void GoExplorePolicy::plan_return(const SelfObservation& o) {
   budget_ = cfg_.explore_steps;
 }
 
-int GoExplorePolicy::decide(const SelfObservation& o) {
+int GoExplorePolicy::choose(const SelfObservation& o) {
   last_ = o;
   map_.stand(o);
   archive_.observe(o, step_);
@@ -160,7 +160,17 @@ int GoExplorePolicy::decide(const SelfObservation& o) {
   return explore_move(o);
 }
 
+int GoExplorePolicy::decide(const SelfObservation& o) {
+  last_choice_ = choose(o);
+  return last_choice_;
+}
+
 void GoExplorePolicy::outcome(int action, bool succeeded) {
+  if (action != last_choice_ && phase_ == GoExplorePhase::Return) {
+    path_.clear();
+    phase_ = GoExplorePhase::Explore;
+  }
+  last_choice_ = -2;
   if (action >= 0 && action < kMoves) {
     map_.tried(last_.x, last_.y, action, succeeded);
     if (!succeeded && phase_ == GoExplorePhase::Return) {

@@ -8,11 +8,23 @@
 //   pchie_research_test --unit --z3=PATH --z3-sha=HEX [--z3-lib=PATH --z3-lib-sha=HEX]
 //                                         also compare with the pinned Z3 binary (and its library)
 //   pchie_research_test --report           a longer side-by-side over 64 mazes (prints a table)
+#include "pchie/HeadlessMaze.h"
 #include "pchie/JoinJobDispatcher.h"
+#include "pchie/MirrorSimSideLog.h"
+#include "pchie/ScaledPitMaze.h"
+#include "pchie/Sha256HashChain.h"
+#include "pchie/StageBDoorFactory.h"
+#include "pchie/StageBDoorMaze.h"
+#include "pchie/Dividor.h"
+#include "pchie/Multiplexor.h"
+#include "pchie/research/MazeAdvisor.h"
+#include "pchie/research/SideLog.h"
 #include "pchie/MazeGrid.h"
 #include "pchie/MazeOracle.h"
 #include "pchie/StageBDoorKey.h"
+#include "pchie/rl/MazeL1.h"
 #include "pchie/rl/RlFlags.h"
+#include "pchie/research/AsciiObservation.h"
 #include "pchie/research/ConstraintSolver.h"
 #include "pchie/research/ContextBudget.h"
 #include "pchie/research/Digest.h"
@@ -25,6 +37,8 @@
 #include "pchie/research/TreeOfThoughts.h"
 
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -203,14 +217,16 @@ void test_flags() {
   check(!d.any_on(), "research defaults are all off");
   check(research_runner_clean(d), "research defaults are runner-clean");
   const std::string want =
-      "research.v1 go_explore=0 smt=0 smt_binary=- step_scorer=0 step_scorer_mode=record tot=0 tot_breadth=3 "
-      "tot_depth=2 reflexion=0 lookahead=0 lookahead_depth=3 ctx=1024";
+      "research.v2 go_explore=0 smt=0 smt_binary=- step_scorer=0 step_scorer_mode=record tot=0 tot_breadth=3 "
+      "tot_depth=2 reflexion=0 lookahead=0 lookahead_depth=3 dynamics=- log=- lessons=- ctx=1024";
   check(d.identity_line() == want, "research identity line is pinned");
   check(!kLessonInjectionAllowed, "lesson injection stays off");
 
   const std::vector<std::string> on = {"--research-go-explore", "--research-smt-binary=z3", "--research-step-scorer=enforce",
                                        "--research-tree-of-thoughts", "--research-tot-breadth=4", "--research-tot-depth=3",
-                                       "--research-reflexion", "--research-lookahead=4", "--research-ctx=2048"};
+                                       "--research-reflexion", "--research-lessons=l.jsonl", "--research-lookahead=4",
+                                       "--research-dynamics=d.txt", "--research-dynamics-sha=" + std::string(64, 'a'),
+                                       "--research-ctx=2048"};
   const ResearchParseResult r = parse_research_flags(on);
   check(r.ok, "research flags parse");
   check(r.flags.go_explore && r.flags.smt && r.flags.smt_binary == "z3" && r.flags.step_scorer &&
@@ -222,6 +238,8 @@ void test_flags() {
   check(!parse_research_flags({"--research-nonsense"}).ok, "unknown research flag fails closed");
   check(!parse_research_flags({"--research-ctx=4096"}).ok, "bad ctx fails closed");
   check(!parse_research_flags({"--research-tot-depth=0"}).ok, "bad depth fails closed");
+  check(!parse_research_flags({"--research-lookahead"}).ok, "look-ahead without a pinned model fails closed");
+  check(!parse_research_flags({"--research-reflexion"}).ok, "reflexion without a ledger fails closed");
   check(parse_research_flags({"--rl-l1", "--maze", "b1"}).ok, "non-research arguments are left alone");
 
   // Reasoning-layer flags are untouched by research arguments.
@@ -567,6 +585,234 @@ void test_context_budget() {
   std::printf("  %s\n  %s\n", describe(a).c_str(), describe(b).c_str());
 }
 
+// ---- the research layers inside the maze decide loop (oracle sources, no model) ----
+
+struct MazeTok {
+  std::string actions, world, chain, side, research;
+  bool ok = false, exit = false;
+  std::string err;
+  uint64_t applied = 0, proposals = 0, capped = 0;
+};
+
+std::string hex_of(const std::vector<uint8_t>& v) { return to_hex(v); }
+std::string sha_of_actions(const std::vector<int32_t>& a) {
+  std::string b;
+  for (int32_t x : a) b += std::to_string(x) + ",";
+  return sha256_hex(b);
+}
+bool same_walk(const MazeTok& a, const MazeTok& b) {
+  return a.actions == b.actions && a.world == b.world && a.chain == b.chain && a.side == b.side && a.ok == b.ok;
+}
+
+MazeTok run_b1(uint64_t seed, rl::MazeRl* r, bool stage_a = false, int step_budget = 0) {
+  const MazeGrid g = stage_a ? ScaledPitMaze::make() : MazeGrid(seed, MazeGrid::kDefaultWidth, MazeGrid::kDefaultHeight);
+  HeadlessMaze m(g);
+  m.set_search_budget(16);
+  MirrorSimSideLog log;
+  if (stage_a) m.enable_mirror_sim(&log);
+  if (step_budget > 0) m.set_step_budget(step_budget);
+  if (r) m.set_rl(r);
+  Sha256HashChain ch;
+  MazeResult out;
+  if (r) r->begin_run();
+  const bool ok = m.run_unit("", stage_a ? nullptr : &ch, out);
+  if (r) r->end_run();
+  MazeTok t;
+  t.actions = sha_of_actions(out.actions);
+  t.world = hex_of(out.h_world_sha);
+  t.chain = stage_a ? "" : hex_of(ch.head());
+  t.side = stage_a ? hex_of(log.sha256()) : "";
+  t.ok = ok;
+  t.exit = out.reached_exit;
+  t.err = out.err;
+  if (r) {
+    t.applied = r->st.research_applied;
+    t.proposals = r->st.research_proposals;
+    t.capped = r->st.research_capped;
+  }
+  return t;
+}
+
+MazeTok run_with(uint64_t seed, const ResearchFlags& f, bool stage_a, std::string* digest = nullptr) {
+  const int step_budget = stage_a ? 80 : 160;  // keeps the unit test quick
+  MazeResearchAdvisor adv(f);
+  std::string err;
+  MazeTok t;
+  if (!adv.prepare(err)) {
+    t.err = err;
+    return t;
+  }
+  rl::MazeRl r;
+  r.research = &adv;
+  t = run_b1(seed, &r, stage_a, step_budget);
+  t.research = adv.digest();
+  if (digest) *digest = adv.digest();
+  return t;
+}
+
+const char* propose_right_answer(void*, int door, const TraceL1Task&) {
+  return door == 0 ? Dividor::kName : Multiplexor::kName;
+}
+
+void test_maze_wiring(const std::string& dir) {
+  // Flags off: an idle advisor changes nothing, with and without the reasoning-layer loop.
+  {
+    MazeResearchAdvisor idle{ResearchFlags{}};
+    check(!idle.engaged(), "idle advisor is not engaged");
+    rl::MazeRl r;
+    r.research = &idle;
+    check(!r.engaged(), "an idle advisor does not engage the reasoning-layer loop");
+    bool same_all = true;
+    for (uint64_t seed : {1ULL, 2ULL, 7ULL, 42ULL}) {
+      const MazeTok off = run_b1(seed, nullptr);
+      rl::MazeRl a;
+      a.research = &idle;
+      const MazeTok with_idle = run_b1(seed, &a);
+      rl::MazeRl loop;
+      loop.force_rl_loop = true;
+      const MazeTok loop_only = run_b1(seed, &loop);
+      rl::MazeRl loop_idle;
+      loop_idle.force_rl_loop = true;
+      loop_idle.research = &idle;
+      const MazeTok loop_with_idle = run_b1(seed, &loop_idle);
+      same_all = same_all && same_walk(off, with_idle) && same_walk(off, loop_only) && same_walk(loop_only, loop_with_idle);
+    }
+    check(same_all, "flags off: idle advisor == no advisor on B1 (4 seeds; actions, H_world, chain)");
+    const MazeTok a_off = run_b1(0, nullptr, true, 80);
+    rl::MazeRl ra;
+    ra.research = &idle;
+    check(same_walk(a_off, run_b1(0, &ra, true, 80)),
+          "flags off: idle advisor == no advisor on Stage A, 80 steps (actions, H_world, side log)");
+    std::printf("  flags-off B1 seed 1 actions %.16s, Stage A actions %.16s\n", run_b1(1, nullptr).actions.c_str(),
+                a_off.actions.c_str());
+  }
+  // Go-Explore on B1: proposals go through legality and the gate; the run repeats exactly; the side chain verifies.
+  const std::string log1 = dir + "/research_b1_go_explore.jsonl";
+  {
+    std::remove(log1.c_str());
+    ResearchFlags f;
+    f.go_explore = true;
+    f.log = log1;
+    const MazeTok a = run_with(1, f, false);
+    std::remove(log1.c_str());
+    const MazeTok b = run_with(1, f, false);
+    check(a.ok == b.ok && same_walk(a, b) && a.research == b.research, "B1 with Go-Explore repeats exactly");
+    check(a.proposals > 0 && a.applied > 0, "B1 Go-Explore proposals reach the root as prior shares");
+    std::string head, err;
+    size_t lines = 0;
+    check(SideLog::verify(log1, head, lines, err) && lines > 0, "B1 research side chain verifies");
+    const MazeTok off = run_b1(1, nullptr);
+    std::printf("  B1 Go-Explore: err=%s\n", a.err.c_str());
+    std::printf("  B1 Go-Explore: ok=%d exit=%d proposals=%llu applied=%llu actions %.16s (off %.16s) side %.16s\n",
+                int(a.ok), int(a.exit), (unsigned long long)a.proposals, (unsigned long long)a.applied,
+                a.actions.c_str(), off.actions.c_str(), a.research.c_str());
+  }
+  // Stage A (64x64 with pits and the mirror sim).
+  {
+    ResearchFlags f;
+    f.go_explore = true;
+    const MazeTok a = run_with(0, f, true), b = run_with(0, f, true);
+    check(same_walk(a, b) && a.research == b.research, "Stage A with Go-Explore repeats exactly");
+    check(a.applied > 0, "Stage A Go-Explore proposals are applied");
+    std::printf("  Stage A Go-Explore: ok=%d exit=%d applied=%llu err=%s actions %.16s\n", int(a.ok), int(a.exit),
+                (unsigned long long)a.applied, a.err.c_str(), a.actions.c_str());
+  }
+  // Look-ahead: freeze a model from Little Nemo's own transitions on a Go-Explore walk that found the exit
+  // (same state encoding as the advisor), pin it, run the decide loop with it.
+  {
+    DynamicsTrainer trainer;
+    const Episode walk = run_go_explore(1, 4000);
+    for (const auto& t : walk.transitions) trainer.add(t);
+    const size_t n = walk.transitions.size();
+    const FrozenDynamics model = trainer.freeze();
+    const std::string path = dir + "/research_dynamics.txt";
+    {
+      std::ofstream out(path, std::ios::binary | std::ios::trunc);
+      out << model.canonical() << "\n";
+    }
+    FrozenDynamics back;
+    std::string err;
+    check(FrozenDynamics::from_canonical(model.canonical() + "\n", model.sha256(), back, err) && back.sha256() == model.sha256(),
+          "frozen dynamics round-trip through their text form");
+    ResearchFlags f;
+    f.lookahead = true;
+    f.lookahead_depth = 4;
+    f.dynamics = path;
+    f.dynamics_sha = std::string(64, '0');
+    const MazeTok bad = run_with(1, f, false);
+    check(!bad.ok && bad.err.find("pin") != std::string::npos, "look-ahead with a wrong pin fails closed");
+    f.dynamics_sha = model.sha256();
+    const MazeTok a = run_with(1, f, false), b = run_with(1, f, false);
+    check(a.ok && a.exit && same_walk(a, b) && a.research == b.research,
+          "B1 with the frozen look-ahead reaches the exit and repeats exactly");
+    check(a.applied > 0, "look-ahead proposals are applied");
+    std::printf("  look-ahead: %zu transitions -> %zu entries sha %.16s; B1 ok=%d exit=%d applied=%llu actions %.16s\n", n,
+                model.size(), model.sha256().c_str(), int(a.ok), int(a.exit), (unsigned long long)a.applied,
+                a.actions.c_str());
+  }
+  // Step scorer (enforce) and Reflexion together.
+  {
+    const std::string lessons = dir + "/research_lessons.jsonl";
+    std::remove(lessons.c_str());
+    ResearchFlags f;
+    f.go_explore = true;
+    f.step_scorer = true;
+    f.step_scorer_mode = ScorerMode::Enforce;
+    f.reflexion = true;
+    f.lessons = lessons;
+    const MazeTok a = run_with(2, f, false);
+    std::string head, err;
+    size_t lines = 0;
+    LessonLedger ledger(lessons);
+    check(a.ok || !a.err.empty(), "B1 with the step scorer and Reflexion finishes");
+    check(ledger.verify(head, lines, err), "Reflexion ledger from a maze run verifies");
+    std::printf("  step scorer + Reflexion: ok=%d exit=%d capped=%llu lessons=%zu\n", int(a.ok), int(a.exit),
+                (unsigned long long)a.capped, lines);
+    std::remove(lessons.c_str());
+  }
+  // Stage B has no research view yet: an engaged advisor fails closed there.
+  {
+    ResearchFlags f;
+    f.go_explore = true;
+    MazeResearchAdvisor adv(f);
+    std::string err;
+    adv.prepare(err);
+    rl::MazeRl r;
+    r.research = &adv;
+    StageBDoorMaze m(StageBDoorFactory::make());
+    m.set_rl(&r);
+    StageBDoorResult out;
+    r.begin_run();
+    const bool ok = m.run_unit(&propose_right_answer, nullptr, out);
+    r.end_run();
+    check(!ok && out.err.find("view") != std::string::npos, "Stage B with research on fails closed (no view yet)");
+  }
+  // Thread counts: 4 B1 seeds with Go-Explore in parallel, folded in seed order.
+  {
+    std::string ref;
+    bool same = true;
+    for (int workers : kWorkerCounts) {
+      std::vector<std::string> slot(4);
+      JoinJobDispatcher jobs(workers);
+      jobs.parallel_for(4, [&](int i) {
+        ResearchFlags f;
+        f.go_explore = true;
+        const MazeTok t = run_with(uint64_t(10 + i), f, false);
+        slot[size_t(i)] = t.actions + t.world + t.chain + t.research + std::to_string(int(t.ok));
+      });
+      std::string fold;
+      for (const auto& s : slot) fold += s + "\n";
+      const std::string sha = sha256_hex(fold);
+      if (ref.empty()) ref = sha;
+      same = same && sha == ref;
+    }
+    check(same, "B1 Go-Explore 4-seed fold identical at 1/2/4/8/12 workers");
+    std::printf("  B1 Go-Explore 4-seed fold %.16s\n", ref.c_str());
+  }
+  std::remove(log1.c_str());
+  std::remove((dir + "/research_dynamics.txt").c_str());
+}
+
 void report() {
   std::printf("seed  shortest  go_explore  least_tried\n");
   uint64_t ge_total = 0, lt_total = 0;
@@ -587,6 +833,102 @@ void report() {
               static_cast<unsigned long long>(ge_total), static_cast<unsigned long long>(lt_total));
 }
 
+// ---- P2: Nemo View ASCII observations (offline fixture from the engine's own test scene) ----
+
+#ifndef PCHIE_RESEARCH_DATA
+#define PCHIE_RESEARCH_DATA "tests/research/data"
+#endif
+
+bool load_fixture(AsciiCapture& c) {
+  std::ifstream f(std::string(PCHIE_RESEARCH_DATA) + "/nemo_ascii_fixture_80x45.json", std::ios::binary);
+  if (!f) return false;
+  std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+  MiniJson j;
+  std::string err;
+  return MiniJson::parse(text, j, err) && capture_from_json(j, c, err);
+}
+
+void test_ascii_observation(const std::string& dir) {
+  AsciiCapture c;
+  check(load_fixture(c), "ascii: fixture capture loads (vision.capture_ascii result shape)");
+  AsciiView v;
+  std::string err;
+  check(verify_capture(c, v, err), "ascii: fixture verifies (canonical record recomputed here)");
+  check(v.sha256 == "4be9bccb4718b82f2be126e1e6a464b0f289c76018e7842da8924e234bd485db",
+        "ascii: same record hash the engine's own Nemo View test prints");
+  check(v.cols == 80 && v.rows == 45 && v.glyph.size() == size_t(81 * 45 - 1), "ascii: decoded glyph rows are 80x45");
+  check(rle_encode(v.glyph) == c.glyph, "ascii: run-length code round trips to the engine's form");
+  std::string bad;
+  check(!rle_decode("5#", bad) && !rle_decode("#3", bad) && !rle_decode("\n4", bad), "ascii: malformed run-length codes refused");
+  {
+    AsciiCapture t = c; AsciiView o;
+    t.fg[100] = t.fg[100] == '0' ? '1' : '0';
+    check(!verify_capture(t, o, err) && err.find("hash mismatch") != std::string::npos, "ascii: one changed colour cell fails closed");
+  }
+  {
+    AsciiCapture t = c; AsciiView o;
+    t.rle = false; t.glyph = v.glyph; t.glyph[90] = t.glyph[90] == '#' ? '|' : '#';
+    check(!verify_capture(t, o, err), "ascii: one changed glyph fails closed");
+  }
+  {
+    AsciiCapture t = c; AsciiView o;
+    t.rle = false; t.glyph = v.glyph; t.glyph[0] = '7';
+    check(!verify_capture(t, o, err) && err.find("digits") != std::string::npos, "ascii: digits in the glyph rows refused");
+  }
+  {
+    AsciiCapture t = c; AsciiView o;
+    t.rows = 44;
+    check(!verify_capture(t, o, err) && err.find("shape") != std::string::npos, "ascii: wrong rows refused");
+  }
+  {
+    AsciiCapture t = c; AsciiView o;
+    t.lut_sha[0] = t.lut_sha[0] == 'c' ? 'd' : 'c';
+    check(!verify_capture(t, o, err), "ascii: another depth table fails closed");
+  }
+  {
+    AsciiCapture t = c; AsciiView o;
+    t.format = "nemo_ascii.v2";
+    check(!verify_capture(t, o, err), "ascii: unknown format refused");
+  }
+  const auto r1 = ascii_requests(1024), r2 = ascii_requests(2048);
+  check(r1.size() == 3 && r1[0].fovea && r1[1].fovea && r1[2].fovea && r1[0].rel == 0, "ascii: 1024 asks for three foveas");
+  check(r2.size() == 3 && !r2[0].fovea && r2[0].cols == 40 && r2[0].fit_cols == 40 && r2[0].fit_rows == 22 && r2[1].fovea &&
+            r2[1].rel == 3 && r2[2].rel == 1,
+        "ascii: 2048 asks for the 40-column forward view and two foveas");
+  check(ascii_requests(4096).empty(), "ascii: other context sizes ask for nothing");
+  // build both prompts from the fixture (fit to each slot) and check the estimate holds
+  for (uint32_t ctx : {1024u, 2048u}) {
+    const ContextPlan plan = context_plan(ctx);
+    std::string text = std::string(ascii_legend()) + "\n";
+    bool fit_ok = true;
+    for (const AsciiRequest& q : ascii_requests(ctx)) {
+      std::string g;
+      fit_ok = fit_ok && fit_glyph(v, q.fit_cols, q.fit_rows, g, err);
+      text += observation_text(q.slot, g, q.fit_cols, q.fit_rows);
+    }
+    char line[120];
+    std::snprintf(line, sizeof(line), "ascii: ctx %u prompt fits its plan (%zu chars, plan %d view tokens)", ctx, text.size(), plan.view_tokens);
+    check(fit_ok && int(text.size() / 2) <= plan.view_tokens + 64, line);
+  }
+  std::string g;
+  check(!fit_glyph(v, 81, 12, g, err), "ascii: a slot larger than the view is refused");
+  // the view side chain: verifies, and the same views give the same head
+  std::string heads[2];
+  for (int k = 0; k < 2; ++k) {
+    const std::string path = dir + "/research_ascii_obs_" + std::to_string(k) + ".jsonl";
+    std::remove(path.c_str());
+    SideLog log(path);
+    bool ok = true;
+    for (int d = 0; d < 3; ++d) ok = ok && log_view(log, "d000_look_" + std::to_string(d), "fovea_forward", v, err);
+    std::string head; size_t n = 0;
+    ok = ok && SideLog::verify(path, head, n, err) && n == 3 && head == log.head();
+    heads[k] = head;
+    check(ok, "ascii: view side chain verifies");
+    std::remove(path.c_str());
+  }
+  check(heads[0] == heads[1], "ascii: same views, same side chain head");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -614,6 +956,8 @@ int main(int argc, char** argv) {
     test_reflexion();
     test_frozen_dynamics();
     test_context_budget();
+    test_ascii_observation(".");
+    test_maze_wiring(".");
   }
   if (rep) report();
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

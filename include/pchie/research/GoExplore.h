@@ -61,8 +61,12 @@ class GoExplorePolicy {
   /// Next action for this observation (kNorth..kWest, kPickup, kUse), or -1 at the exit.
   int decide(const SelfObservation& o);
 
-  /// What happened to the action decide() returned (moved / picked up / door opened).
+  /// What happened after decide(): the action actually taken (it may differ from the one decide()
+  /// returned when another layer chose) and whether it worked. A different action ends a return trip.
   void outcome(int action, bool succeeded);
+
+  /// Feed what he sees around him (open moves) at the current observation, before decide().
+  void sense(const SelfObservation& o, uint8_t open_mask) { map_.sense(o.x, o.y, open_mask); }
 
   const ExperienceMap& map() const { return map_; }
   const GoExploreArchive& archive() const { return archive_; }
@@ -75,6 +79,7 @@ class GoExplorePolicy {
   std::string digest() const;
 
  private:
+  int choose(const SelfObservation& o);
   int explore_move(const SelfObservation& o);
   void plan_return(const SelfObservation& o);
   bool usable(const SelfObservation& o, int m) const;
@@ -89,6 +94,7 @@ class GoExplorePolicy {
   uint32_t returns_ = 0;
   uint32_t failed_returns_ = 0;
   SelfObservation last_{};
+  int last_choice_ = -2;
   std::set<uint64_t> used_at_;
 };
 

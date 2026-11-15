@@ -72,6 +72,12 @@ class FrozenDynamics {
   uint32_t value_sweeps() const { return value_sweeps_; }
   const std::string& sha256() const { return sha_; }
   std::string canonical() const;
+  bool knows(uint64_t state) const;
+
+  /// Rebuild a frozen model from its canonical text. Fails closed when the text does not parse or its
+  /// SHA-256 differs from the pin.
+  static bool from_canonical(const std::string& text, const std::string& pinned_sha256, FrozenDynamics& out,
+                             std::string& err);
 
  private:
   friend class DynamicsTrainer;

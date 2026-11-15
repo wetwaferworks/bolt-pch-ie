@@ -16,7 +16,7 @@ ContextPlan context_plan(uint32_t ctx, int instruction_tokens, int answer_tokens
   if (ctx == 1024) {
     p.views = {{"fovea_forward", 32, 12}, {"fovea_left", 32, 12}, {"fovea_right", 32, 12}};
   } else if (ctx == 2048) {
-    p.views = {{"forward", 40, 22}, {"left", 24, 9}, {"right", 24, 9}};
+    p.views = {{"forward", 40, 22}, {"fovea_left", 32, 12}, {"fovea_right", 32, 12}};  // the views vision.capture_ascii gives
   } else {
     return p;
   }

@@ -60,6 +60,7 @@
 #include "pchie/Sha256.h"
 #include "pchie/UntrustedText.h"
 #include "pchie/ModelPath.h"
+#include "pchie/research/AsciiObservation.h"  // --obs ascii (opt-in)
 
 #include <algorithm>
 #include <chrono>
@@ -377,6 +378,7 @@ struct DecideIn {
   bool reach_miss[4] = {false, false, false, false};  // own memory: a ranged interaction from this cell that way was refused / failed
   bool carrying = false;
   std::string recent;      // last moves (agent's own)
+  std::string ascii;       // --obs ascii: checked Nemo View rows for the live view (empty = pixels only, prompt unchanged)
 };
 struct DecideOut {
   std::string obs, blank, leaf_log;
@@ -425,6 +427,7 @@ static void build_obs(const DecideIn& in, DecideOut& o) {
     o.obs += std::string(kRel[r]) + ": " + in.phrase[r] + ((walk || in.shut[r]) ? " (" + dir_tag(in, r) + rt + ")" : "") + "\n";
     o.blank += std::string(kRel[r]) + ": unknown (" + dir_tag(in, r) + ")\n";
   }
+  o.obs += in.ascii;  // live view only; the blank control never carries it
   const std::string tail = std::string("key carried: ") + (in.carrying ? "yes" : "no") + "\nlast moves: " + in.recent;
   o.obs += tail; o.blank += tail;
 }
@@ -531,6 +534,7 @@ struct Args {
   int b1_seed = 1;         // Scratch: B1 maze seed (default 1)
   int b1_size = 16;        // Scratch: square B1 size (default 16)
   bool act_blank = false;  // Scratch: holdout, act on the blank-view choice
+  int obs_ascii = 0;       // --obs ascii[=1024|2048]: add checked Nemo View rows to the live view (0 = off, pixels only)
 };
 static bool parse_args(int argc, char** argv, Args& a) {
   for (int i = 1; i < argc; ++i) {
@@ -562,9 +566,19 @@ static bool parse_args(int argc, char** argv, Args& a) {
     else if (k == "--reach") { if (!nexti(a.reach) || a.reach < 0 || a.reach > 4) return false; }
     else if (k == "--b1-seed") { if (!nexti(a.b1_seed) || a.b1_seed < 1) return false; }
     else if (k == "--act-blank") a.act_blank = true;
+    else if (k == "--obs") {
+      std::string v; if (!next(v)) return false;
+      if (v == "pixels") a.obs_ascii = 0;
+      else if (v == "ascii") a.obs_ascii = -1;  // follows --ctx
+      else if (v == "ascii=1024") a.obs_ascii = 1024;
+      else if (v == "ascii=2048") a.obs_ascii = 2048;
+      else return false;
+    }
     else if (k == "--b1-size") { if (!nexti(a.b1_size) || a.b1_size < 8 || a.b1_size > 32) return false; }
     else return false;
   }
+  if (a.obs_ascii == -1) a.obs_ascii = a.ctx;
+  if (a.obs_ascii != 0 && a.obs_ascii != 1024 && a.obs_ascii != 2048) return false;  // ascii views need ctx 1024 or 2048
   return !a.out.empty() && !a.mode.empty();
 }
 
@@ -583,7 +597,7 @@ static const char kProbeFixture[] =
 
 int main(int argc, char** argv) {
   Args a;
-  if (!parse_args(argc, argv, a)) { std::fprintf(stderr, "usage: pchie_lk_visnav (--speed|--probe|--nav|--offline DIR) --out DIR [--game LithoKraft.exe] [--enc cfg] [--maze b1|stagea] ...\n"); return 2; }
+  if (!parse_args(argc, argv, a)) { std::fprintf(stderr, "usage: pchie_lk_visnav (--speed|--probe|--nav|--offline DIR) --out DIR [--game LithoKraft.exe] [--enc cfg] [--maze b1|stagea] [--obs pixels|ascii[=1024|2048]] ...\n"); return 2; }
   if (a.game.empty()) {
     if (const char* e = std::getenv("PCHIE_GAME")) a.game = e;
     else if (const char* e = std::getenv("LITHOKRAFT")) a.game = e;
@@ -740,6 +754,7 @@ int main(int argc, char** argv) {
   SetEnvironmentVariableW(L"LL_DATA_ROOT", data_root.wstring().c_str());
   SetEnvironmentVariableW(L"LL_MCP_DISPLAY_VISION", L"1");
   SetEnvironmentVariableW(L"LL_MCP_NO_FOCUS_PAUSE", L"1");
+  if (a.obs_ascii) SetEnvironmentVariableW(L"LL_MCP_NEMO_VIEW", L"1");  // --obs ascii only
   const std::string cl = "\"" + a.game + "\" --mcp-stdio --pchie-maze \"" + fs::absolute(maze_path).string() +
                          "\" --spawn maze --renderer vulkan --display windowed --resolution " + a.game_res + " --seed 1 --no-save --mute --capture --no-vsync";
   say("launch: %s  [env LL_MCP_DISPLAY_VISION=1 LL_MCP_NO_FOCUS_PAUSE=1]", cl.c_str());
@@ -770,6 +785,26 @@ int main(int argc, char** argv) {
     c.cam_yaw = cam.num_or("yaw", 0); c.cam_pitch = cam.num_or("pitch", 0);
     say("view %s: renderer=%s %dx%d tick=%.0f yaw=%.1f pitch=%.1f png=%s -> \"%s\" {%s}", tag.c_str(), rn.c_str(), w, h, p.num_or("tick", 0), cam.num_or("yaw", 0),
         cam.num_or("pitch", 0), c.sha.substr(0, 16).c_str(), dir_phrase(c.v).c_str(), c.v.band_pct.c_str());
+    return true;
+  };
+  // --obs ascii: one checked Nemo View per slot of the context plan, logged on its own side chain
+  const std::vector<research::AsciiRequest> ascii_reqs = a.obs_ascii ? research::ascii_requests(uint32_t(a.obs_ascii)) : std::vector<research::AsciiRequest>{};
+  const std::string ascii_path = a.obs_ascii ? (fs::path(a.out) / "visnav_ascii_side_chain.jsonl").string() : std::string();
+  research::SideLog ascii_log(ascii_path);
+  int n_ascii = 0;
+  if (a.obs_ascii) say("obs ascii: ctx %d, %zu views per decision [env LL_MCP_NEMO_VIEW=1]; side chain visnav_ascii_side_chain.jsonl", a.obs_ascii, ascii_reqs.size());
+  auto capture_ascii = [&](const std::string& tag, const research::AsciiRequest& q, std::string& text, std::string& e) -> bool {
+    MiniJson p; char args[160];
+    std::snprintf(args, sizeof(args), "{\"pilot\":\"player\",\"cols\":%d,\"region\":\"%s\",\"view\":\"objects\",\"rle\":true}", q.cols, q.fovea ? "fovea" : "full");
+    if (!host.call_ok("vision.capture_ascii", args, &p, e)) return false;
+    research::AsciiCapture c; research::AsciiView v; std::string g;
+    if (!research::capture_from_json(p, c, e) || !research::verify_capture(c, v, e)) return false;  // fail closed
+    if (!research::fit_glyph(v, q.fit_cols, q.fit_rows, g, e)) return false;
+    if (!research::log_view(ascii_log, tag, q.slot, v, e)) return false;
+    { std::ofstream f(view_dir / (tag + "_" + q.slot + ".txt"), std::ios::binary); f << v.glyph << "\n"; }
+    text += research::observation_text(q.slot, g, q.fit_cols, q.fit_rows);
+    ++n_ascii;
+    say("ascii %s %s: %dx%d %s sha=%s", tag.c_str(), q.slot.c_str(), v.cols, v.rows, v.view.c_str(), v.sha256.substr(0, 16).c_str());
     return true;
   };
 
@@ -859,10 +894,13 @@ int main(int argc, char** argv) {
       if ((now_s() - t_nav) > 60.0 * a.max_minutes) { say("wall-clock cap reached (%d min)", a.max_minutes); break; }
       // 1) look around: forward, right, back, left (relative to heading), live Vulkan frames
       Cap caps[4];
+      std::vector<std::string> ascii_part(ascii_reqs.size());
       for (int r = 0; r < 4; ++r) {
         const int d = (heading + r) % 4;
         char tag[64]; std::snprintf(tag, sizeof(tag), "d%03d_look_%s", decisions, kRel[r]);
         if (!look_capture(d, tag, caps[r], err)) { say("FAIL look: %s", err.c_str()); neml_infra_fail = true; goto nav_end; }
+        for (size_t q = 0; q < ascii_reqs.size(); ++q)
+          if (ascii_reqs[q].rel == r && !capture_ascii(tag, ascii_reqs[q], ascii_part[q], err)) { say("FAIL ascii view: %s", err.c_str()); neml_infra_fail = true; goto nav_end; }
       }
       {
         // 2)-5) observation (pixels + own memory only), vision-only filter, policy fork, blank fork, leaf forks
@@ -877,6 +915,7 @@ int main(int argc, char** argv) {
           if (a.reach > 0) { reach_fields(caps[r].v, in, r); in.reach_miss[r] = reach_miss.is_shut(ox_, oy_, (heading + r) % 4); }
         }
         in.carrying = carrying; in.recent = rec_s; in.reach = a.reach;
+        if (!ascii_reqs.empty()) { in.ascii = std::string(research::ascii_legend()) + "\n"; for (const auto& t : ascii_part) in.ascii += t; }
         DecideOut o; decide(model, brain, in, a.prior_w, a.blank, o);
         if (!o.allowed[o.raw_top]) ++raw_blocked;
         if (o.choice != o.pol_top) ++leaf_flips;
@@ -988,6 +1027,11 @@ int main(int argc, char** argv) {
         const uint32_t id = neml::write_receipt(neml::process_config(), nrec, decisions, at_exit, "vision " + a.maze, info, &nerr);
         if (id) say("NEML: receipt run_id=%u exit=%d steps=%d forks=%u dead_ends=%u events_fired=%zu", id, int(at_exit), decisions, nrec.forks, nrec.dead_ends, nrec.all.size());
         else say("NEML: receipt NOT written: %s", nerr.c_str());
+      }
+      if (a.obs_ascii) {
+        std::string ah, ae; size_t an = 0;
+        const bool aok = research::SideLog::verify(ascii_path, ah, an, ae);
+        say("ascii side chain (SCRATCH, never official): views=%d verify=%s head=%s lines=%zu", n_ascii, aok ? "ok" : ae.c_str(), ah.c_str(), an);
       }
       if (a.reach > 0) say("reach: N=%d ranged_acts=%d refused=%d max_blocks_used=%d", a.reach, reach_acts, reach_refused, reach_max);
       say("visnav obs side chain (SCRATCH, never official, never a golden): sha256 head=%s len=%zu; trace W-cells sha256=%s", hex(chain).c_str(), chain_len, sha_hex(pilot.trace()).c_str());

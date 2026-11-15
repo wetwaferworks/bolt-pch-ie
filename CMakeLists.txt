@@ -193,7 +193,7 @@ if(WIN32)
   # Vision-only navigation (Scratch), CPU decide path. Memory receipts are on by default (--neml off).
   add_executable(pchie_lk_visnav vision/pchie_lk_visnav.cpp)
   target_include_directories(pchie_lk_visnav PRIVATE vision)
-  target_link_libraries(pchie_lk_visnav PRIVATE pchie_core user32)
+  target_link_libraries(pchie_lk_visnav PRIVATE pchie_core pchie_research user32)  # research: --obs ascii only
 endif()
 add_executable(pchie_gguf_probe tests/pchie_gguf_probe.cpp)
 target_link_libraries(pchie_gguf_probe PRIVATE pchie_core)
@@ -250,21 +250,26 @@ add_executable(pchie_rl_flags_test tests/rl/pchie_rl_flags_test.cpp)
 target_link_libraries(pchie_rl_flags_test PRIVATE pchie_core)
 add_test(NAME pchie_rl_flags COMMAND pchie_rl_flags_test)
 
-# L1/L2/sealed-tuple flags-on ablations (decide path only, CPU).
-add_executable(pchie_rl_l1l2_test tests/rl/pchie_rl_l1l2_test.cpp)
-target_link_libraries(pchie_rl_l1l2_test PRIVATE pchie_core)
-add_test(NAME pchie_rl_l1l2 COMMAND pchie_rl_l1l2_test --unit)
-
-# Research layers (opt-in, --research-* flags; all off by default). A separate library, so pchie_core and
-# every existing program build exactly as before. No model, about a second.
+# Research layers (opt-in, --research-* flags; all off by default). A separate library: pchie_core is unchanged,
+# and the maze runner (pchie_rl_l1l2_test --maze) only uses it when a research flag is given. No model, about a second.
 add_library(pchie_research STATIC
   src/research/ResearchFlags.cpp src/research/ExperienceMap.cpp src/research/GoExplore.cpp
   src/research/ConstraintSolver.cpp src/research/StepScorer.cpp src/research/TreeOfThoughts.cpp
-  src/research/Reflexion.cpp src/research/FrozenDynamics.cpp src/research/ContextBudget.cpp)
+  src/research/Reflexion.cpp src/research/FrozenDynamics.cpp src/research/ContextBudget.cpp
+  src/research/SideLog.cpp src/research/MazeAdvisor.cpp src/research/AsciiObservation.cpp)
 target_link_libraries(pchie_research PUBLIC pchie_core)
 add_executable(pchie_research_test tests/research/pchie_research_test.cpp)
 target_link_libraries(pchie_research_test PRIVATE pchie_research)
+target_compile_definitions(pchie_research_test PRIVATE PCHIE_RESEARCH_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/research/data")
 add_test(NAME pchie_research COMMAND pchie_research_test --unit)
+# Freezes a dynamics model from research side-chain logs (no model, seconds).
+add_executable(pchie_research_tool tools/pchie_research_tool.cpp)
+target_link_libraries(pchie_research_tool PRIVATE pchie_research)
+
+# L1/L2/sealed-tuple flags-on ablations (decide path only, CPU).
+add_executable(pchie_rl_l1l2_test tests/rl/pchie_rl_l1l2_test.cpp)
+target_link_libraries(pchie_rl_l1l2_test PRIVATE pchie_core pchie_research)  # research: --research-* on maze runs only
+add_test(NAME pchie_rl_l1l2 COMMAND pchie_rl_l1l2_test --unit)
 
 # Readers for finished planner-comparison and query-before-plan run logs
 # (stop-and-report rule, L2 engagement) and the L2 store path guard. No model, seconds.

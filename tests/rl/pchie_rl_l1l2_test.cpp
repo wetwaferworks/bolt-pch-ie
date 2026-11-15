@@ -31,12 +31,14 @@
 #include "pchie/rl/PlanMemory.h"
 #include "pchie/rl/RlFlags.h"
 #include "pchie/rl/RunCompare.h"
+#include "pchie/research/MazeAdvisor.h"  // opt-in --research-* layers (maze runs only)
 #include "pchie/ModelPath.h"
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -802,6 +804,18 @@ static int maze_run(int argc, char** argv) {
   std::remove(r.qbp_log.c_str());
   rl::FilePlanMemory* mem = nullptr;
   if (!mempath.empty()) { mem = new rl::FilePlanMemory(mempath, pr.flags.qbp_min_truth); r.memory = mem; }
+  // Research layers (--research-*, off by default). Unknown research flags fail closed.
+  const auto research_args = research::parse_research_flags(argc, argv);
+  if (!research_args.ok) { std::printf("[RLON] research flag error: %s\n", research_args.err.c_str()); return 3; }
+  std::unique_ptr<research::MazeResearchAdvisor> advisor;
+  if (research_args.flags.any_on()) {
+    if (maze == "stageb") { std::printf("[RLON] research layers are wired into b1 and stagea only (fail closed)\n"); return 3; }
+    advisor = std::make_unique<research::MazeResearchAdvisor>(research_args.flags);
+    std::string rerr;
+    if (!advisor->prepare(rerr)) { std::printf("[RLON] %s\n", rerr.c_str()); return 3; }
+    r.research = advisor.get();
+    std::printf("[RLON] research {%s}\n", research_args.flags.identity_line().c_str());
+  }
   const bool eng = r.engaged();
   std::printf("[RLON] start maze=%s label=%s engaged=%d flags={%s} poison=%d steps=%d budget=%d ctx=%d loop_guard=%s tesla=%s attest=%s\n", maze.c_str(), label.c_str(),
               int(eng), pr.flags.identity_line().c_str(), int(poison), steps, budget, ctx, loop_guard ? "on" : "off",
@@ -907,6 +921,14 @@ static int maze_run(int argc, char** argv) {
               r.qbp_chain.head_hex().c_str(), r.st.max_ctx_used, secs);
   bool rehash = r.tuples.size() == r.seals.size();
   for (size_t i = 0; rehash && i < r.tuples.size(); ++i) rehash = rl::tuple_rehashes_to(r.tuples[i], r.seals[i]);
+  if (advisor)
+    std::printf("[RLON] research label=%s decisions=%llu proposals=%llu applied=%llu rejected=%llu capped=%llu go_explore=%llu lookahead=%llu lookahead_unknown=%llu transitions=%llu lessons=%llu side_head=%s digest=%s\n",
+                label.c_str(), (unsigned long long)advisor->stats().decisions, (unsigned long long)r.st.research_proposals,
+                (unsigned long long)r.st.research_applied, (unsigned long long)r.st.research_rejected,
+                (unsigned long long)r.st.research_capped, (unsigned long long)advisor->stats().go_explore_proposals,
+                (unsigned long long)advisor->stats().lookahead_proposals,
+                (unsigned long long)advisor->stats().lookahead_unknown_state, (unsigned long long)advisor->stats().transitions,
+                (unsigned long long)advisor->stats().lessons, advisor->log().head().c_str(), advisor->digest().c_str());
   std::printf("[RLON] g5 label=%s tuples_rehash=%s live_pages_end=%u\n", label.c_str(), rehash ? "PASS" : "FAIL",
               m.pool_swa().live_pages() + m.pool_glob().live_pages());
   delete mem;

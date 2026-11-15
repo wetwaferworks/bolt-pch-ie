@@ -2,6 +2,8 @@
 
 #include "pchie/research/Digest.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <sstream>
 
 namespace pchie {
@@ -70,6 +72,81 @@ std::string FrozenDynamics::canonical() const {
   o << "|values|" << values_.size();
   for (const auto& kv : values_) o << '|' << kv.first << ',' << kv.second;
   return o.str();
+}
+
+bool FrozenDynamics::knows(uint64_t state) const {
+  auto it = table_.lower_bound({state, uint8_t(0)});
+  return it != table_.end() && it->first.first == state;
+}
+
+bool FrozenDynamics::from_canonical(const std::string& text, const std::string& pin, FrozenDynamics& out,
+                                    std::string& err) {
+  std::string body = text;
+  while (!body.empty() && (body.back() == '\n' || body.back() == '\r')) body.pop_back();
+  if (sha256_hex(body) != pin) {
+    err = "frozen dynamics do not match their pin";
+    return false;
+  }
+  std::vector<std::string> f;
+  size_t s = 0;
+  for (size_t i = 0; i <= body.size(); ++i)
+    if (i == body.size() || body[i] == '|') {
+      f.push_back(body.substr(s, i - s));
+      s = i + 1;
+    }
+  FrozenDynamics d;
+  size_t i = 0;
+  auto num = [&](const std::string& t, unsigned long long& v) {
+    char* e = nullptr;
+    v = std::strtoull(t.c_str(), &e, 10);
+    return !t.empty() && e && *e == 0;
+  };
+  unsigned long long n = 0;
+  if (f.size() < 2 || f[0] != "frozen_dynamics.v1" || !num(f[1], n)) {
+    err = "bad frozen dynamics header";
+    return false;
+  }
+  i = 2;
+  for (unsigned long long k = 0; k < n; ++k, ++i) {
+    if (i >= f.size()) {
+      err = "truncated frozen dynamics";
+      return false;
+    }
+    unsigned long long st = 0, a = 0, nx = 0, c = 0;
+    long long r = 0;
+    char tail = 0;
+    if (std::sscanf(f[i].c_str(), "%llu,%llu,%llu,%llu,%lld%c", &st, &a, &nx, &c, &r, &tail) != 5) {
+      err = "bad frozen dynamics entry";
+      return false;
+    }
+    DynamicsEntry e;
+    e.next = nx;
+    e.count = uint32_t(c);
+    e.reward_q20 = int32_t(r);
+    d.table_[{st, uint8_t(a)}] = e;
+  }
+  if (i + 1 >= f.size() || f[i] != "values" || !num(f[i + 1], n)) {
+    err = "bad frozen dynamics values";
+    return false;
+  }
+  i += 2;
+  for (unsigned long long k = 0; k < n; ++k, ++i) {
+    unsigned long long st = 0;
+    long long v = 0;
+    char tail = 0;
+    if (i >= f.size() || std::sscanf(f[i].c_str(), "%llu,%lld%c", &st, &v, &tail) != 2) {
+      err = "bad frozen dynamics value";
+      return false;
+    }
+    d.values_[st] = v;
+  }
+  d.sha_ = sha256_hex(d.canonical());
+  if (d.sha_ != pin) {
+    err = "frozen dynamics did not round-trip";
+    return false;
+  }
+  out = std::move(d);
+  return true;
 }
 
 bool FrozenDynamics::predict(uint64_t state, uint8_t action, DynamicsEntry& out) const {

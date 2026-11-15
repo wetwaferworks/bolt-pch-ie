@@ -21,6 +21,20 @@ void ExperienceMap::stand(const SelfObservation& o) {
   p.saw_exit = p.saw_exit || o.at_exit;
 }
 
+void ExperienceMap::sense(int32_t x, int32_t y, uint8_t open_mask) {
+  Place& p = at(x, y);
+  for (int m = 0; m < kMoves; ++m) {
+    const bool open = (open_mask >> m) & 1;
+    p.edge[m] = open ? EdgeState::Open : EdgeState::Blocked;
+    if (open) at(x + move_dx(m), y + move_dy(m));
+  }
+  // The neighbours' edges back toward him follow the same sight.
+  for (int m = 0; m < kMoves; ++m) {
+    const Place* q = find(x + move_dx(m), y + move_dy(m));
+    if (q && ((open_mask >> m) & 1)) at(q->x, q->y).edge[reverse_move(m)] = EdgeState::Open;
+  }
+}
+
 void ExperienceMap::tried(int32_t x, int32_t y, int move, bool moved) {
   if (move < 0 || move >= kMoves) return;
   Place& p = at(x, y);

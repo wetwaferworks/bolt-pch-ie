@@ -557,6 +557,27 @@ class HeadlessMaze final {
     if (n > out.max_nodes) out.max_nodes = n;
   }
 
+  // What Little Nemo sees from where he stands, for the opt-in research advisors: his position (as his
+  // observation shows it), key state, the moves open to him and pits next to him. No layout, no distance.
+  static rl::ResearchView research_view_of(const MazeGrid& g) {
+    rl::ResearchView v;
+    v.x = g.x();
+    v.y = g.y();
+    v.have_key = g.have_key();
+    v.key_here = g.on_key();
+    v.door_near = !g.door_open() && g.adjacent_to_door();
+    v.at_exit = g.at_exit();
+    const MazeAction dirs[4] = {MazeAction::North, MazeAction::East, MazeAction::South, MazeAction::West};
+    const int dx[4] = {0, 1, 0, -1}, dy[4] = {-1, 0, 1, 0};
+    const auto legal = g.legal_actions();
+    for (int m = 0; m < 4; ++m) {
+      for (MazeAction a : legal)
+        if (a == dirs[m]) v.open_mask |= uint8_t(1u << m);
+      if (g.cell(g.x() + dx[m], g.y() + dy[m]) == MazeCell::Pit) v.danger_mask |= uint8_t(1u << m);
+    }
+    return v;
+  }
+
   static bool rl_goal(const MazeGrid& g, uint32_t task_id) {
     switch (task_id) {
       case kGoToKeyA: return g.on_key() || g.have_key();
@@ -583,6 +604,7 @@ class HeadlessMaze final {
     t.obs_text = [](const MazeGrid& s, uint32_t k) { return rl::b1_obs_text(s, k); };
     t.state_key = [](const MazeGrid& s) { return lg_key_(s); };  // loop guard
     t.unsafe = [](const MazeGrid& s) { return s.in_pit(); };     // loop guard cautious landing check
+    t.research_view = [](const MazeGrid& s) { return research_view_of(s); };
     return t;
   }
 

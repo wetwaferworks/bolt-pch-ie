@@ -12,6 +12,10 @@
 //   --research-tot-depth=N           levels (1..6, default 2)
 //   --research-reflexion             write failure lessons as receipts (never injected; that needs JD's go)
 //   --research-lookahead[=N]         frozen dynamics look-ahead, depth N (1..6, default 3)
+//   --research-dynamics=PATH         the frozen dynamics file the look-ahead uses (required with it)
+//   --research-dynamics-sha=HEX      its SHA-256 pin (required with it)
+//   --research-log=PATH              the research side-chain log (decisions, proposals, transitions)
+//   --research-lessons=PATH          the Reflexion lesson ledger
 //   --research-ctx=1024|2048         context size for the 2048 test path (default 1024)
 #pragma once
 
@@ -36,6 +40,10 @@ struct ResearchFlags {
   bool reflexion = false;
   bool lookahead = false;
   uint32_t lookahead_depth = 3;
+  std::string dynamics;
+  std::string dynamics_sha;
+  std::string log;
+  std::string lessons;
   uint32_t ctx = 1024;
 
   bool any_on() const;
