@@ -573,7 +573,11 @@ class HeadlessMaze final {
     for (int m = 0; m < 4; ++m) {
       for (MazeAction a : legal)
         if (a == dirs[m]) v.open_mask |= uint8_t(1u << m);
-      if (g.cell(g.x() + dx[m], g.y() + dy[m]) == MazeCell::Pit) v.danger_mask |= uint8_t(1u << m);
+      const MazeCell c = g.cell(g.x() + dx[m], g.y() + dy[m]);
+      if (c == MazeCell::Pit) v.danger_mask |= uint8_t(1u << m);
+      if (c == MazeCell::KeyA && !g.have_key()) v.key_mask |= uint8_t(1u << m);
+      if (c == MazeCell::DoorA && !g.door_open()) v.door_mask |= uint8_t(1u << m);
+      if (c == MazeCell::Exit) v.exit_mask |= uint8_t(1u << m);
     }
     return v;
   }

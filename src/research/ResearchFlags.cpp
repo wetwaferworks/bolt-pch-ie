@@ -7,14 +7,14 @@ namespace pchie {
 namespace research {
 
 bool ResearchFlags::any_on() const {
-  return go_explore || smt || !smt_binary.empty() || step_scorer || tree_of_thoughts || reflexion || lookahead ||
+  return go_explore || smt || !smt_binary.empty() || !smt_sha.empty() || !smt_lib.empty() || !smt_lib_sha.empty() || step_scorer || tree_of_thoughts || reflexion || lookahead ||
          !dynamics.empty() || !dynamics_sha.empty() || !log.empty() || !lessons.empty() || ctx != 1024;
 }
 
 std::string ResearchFlags::identity_line() const {
   std::ostringstream o;
   o << "research.v2 go_explore=" << int(go_explore) << " smt=" << int(smt)
-    << " smt_binary=" << (smt_binary.empty() ? "-" : "set") << " step_scorer=" << int(step_scorer)
+    << " smt_binary=" << (smt_binary.empty() ? "-" : (smt_sha.empty() ? std::string("set") : smt_sha.substr(0, 16))) << " step_scorer=" << int(step_scorer)
     << " step_scorer_mode=" << (step_scorer_mode == ScorerMode::Enforce ? "enforce" : "record")
     << " tot=" << int(tree_of_thoughts) << " tot_breadth=" << tot_breadth << " tot_depth=" << tot_depth
     << " reflexion=" << int(reflexion) << " lookahead=" << int(lookahead) << " lookahead_depth=" << lookahead_depth
@@ -63,6 +63,15 @@ ResearchParseResult parse_research_flags(const std::vector<std::string>& args) {
       if (v.empty()) return fail("--research-smt-binary needs a path");
       r.flags.smt = true;
       r.flags.smt_binary = v;
+    } else if (take(a, "--research-smt-sha", v)) {
+      if (v.size() != 64) return fail("bad --research-smt-sha (want 64 hex digits)");
+      r.flags.smt_sha = v;
+    } else if (take(a, "--research-smt-lib-sha", v)) {
+      if (v.size() != 64) return fail("bad --research-smt-lib-sha (want 64 hex digits)");
+      r.flags.smt_lib_sha = v;
+    } else if (take(a, "--research-smt-lib", v)) {
+      if (v.empty()) return fail("--research-smt-lib needs a path");
+      r.flags.smt_lib = v;
     } else if (a == "--research-step-scorer") r.flags.step_scorer = true;
     else if (take(a, "--research-step-scorer", v)) {
       if (v == "record") r.flags.step_scorer_mode = ScorerMode::Record;
@@ -101,6 +110,10 @@ ResearchParseResult parse_research_flags(const std::vector<std::string>& args) {
   }
   if (r.flags.lookahead && (r.flags.dynamics.empty() || r.flags.dynamics_sha.empty()))
     return fail("--research-lookahead needs --research-dynamics and --research-dynamics-sha");
+  if (!r.flags.smt_binary.empty() && r.flags.smt_sha.empty()) return fail("--research-smt-binary needs --research-smt-sha");
+  if (r.flags.smt_lib.empty() != r.flags.smt_lib_sha.empty())
+    return fail("--research-smt-lib and --research-smt-lib-sha go together");
+  if (!r.flags.smt_lib.empty() && r.flags.smt_binary.empty()) return fail("--research-smt-lib needs --research-smt-binary");
   if (r.flags.reflexion && r.flags.lessons.empty()) return fail("--research-reflexion needs --research-lessons");
   return r;
 }

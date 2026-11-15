@@ -6,6 +6,9 @@
 //   --research-go-explore            L7 Go-Explore archive (return, then explore) over Nemo's own cells
 //   --research-smt                   exact constraint peer beside L6 (built-in solver)
 //   --research-smt-binary=PATH       also run the pinned Z3 binary at PATH (SHA-256 checked first)
+//   --research-smt-sha=HEX           its SHA-256 pin (required with the binary)
+//   --research-smt-lib=PATH          a library the binary loads (libz3.dll on Windows), pinned with
+//   --research-smt-lib-sha=HEX       its SHA-256
 //   --research-step-scorer[=record|enforce]  step scorer as the L6 verifier score (record by default)
 //   --research-tree-of-thoughts      Tree of Thoughts over plan texts (L3 extension)
 //   --research-tot-breadth=N         candidates per node (1..8, default 3)
@@ -32,6 +35,9 @@ struct ResearchFlags {
   bool go_explore = false;
   bool smt = false;
   std::string smt_binary;
+  std::string smt_sha;
+  std::string smt_lib;
+  std::string smt_lib_sha;
   bool step_scorer = false;
   ScorerMode step_scorer_mode = ScorerMode::Record;
   bool tree_of_thoughts = false;

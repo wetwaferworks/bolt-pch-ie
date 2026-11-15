@@ -18,6 +18,7 @@
 #include "pchie/Dividor.h"
 #include "pchie/Multiplexor.h"
 #include "pchie/research/MazeAdvisor.h"
+#include "pchie/research/OwnMapPlans.h"
 #include "pchie/research/SideLog.h"
 #include "pchie/MazeGrid.h"
 #include "pchie/MazeOracle.h"
@@ -222,7 +223,7 @@ void test_flags() {
   check(d.identity_line() == want, "research identity line is pinned");
   check(!kLessonInjectionAllowed, "lesson injection stays off");
 
-  const std::vector<std::string> on = {"--research-go-explore", "--research-smt-binary=z3", "--research-step-scorer=enforce",
+  const std::vector<std::string> on = {"--research-go-explore", "--research-smt-binary=z3", "--research-smt-sha=" + std::string(64, 'b'), "--research-step-scorer=enforce",
                                        "--research-tree-of-thoughts", "--research-tot-breadth=4", "--research-tot-depth=3",
                                        "--research-reflexion", "--research-lessons=l.jsonl", "--research-lookahead=4",
                                        "--research-dynamics=d.txt", "--research-dynamics-sha=" + std::string(64, 'a'),
@@ -240,6 +241,10 @@ void test_flags() {
   check(!parse_research_flags({"--research-tot-depth=0"}).ok, "bad depth fails closed");
   check(!parse_research_flags({"--research-lookahead"}).ok, "look-ahead without a pinned model fails closed");
   check(!parse_research_flags({"--research-reflexion"}).ok, "reflexion without a ledger fails closed");
+  check(!parse_research_flags({"--research-smt-binary=z3"}).ok, "a Z3 binary without its pin fails closed");
+  check(!parse_research_flags({"--research-smt-binary=z3", "--research-smt-sha=" + std::string(64, 'b'), "--research-smt-lib=l"}).ok,
+        "a Z3 library without its pin fails closed");
+  check(r.flags.identity_line().find("smt_binary=bbbbbbbbbbbbbbbb") != std::string::npos, "the identity line names the pinned Z3");
   check(parse_research_flags({"--rl-l1", "--maze", "b1"}).ok, "non-research arguments are left alone");
 
   // Reasoning-layer flags are untouched by research arguments.
@@ -633,9 +638,12 @@ MazeTok run_b1(uint64_t seed, rl::MazeRl* r, bool stage_a = false, int step_budg
   return t;
 }
 
-MazeTok run_with(uint64_t seed, const ResearchFlags& f, bool stage_a, std::string* digest = nullptr) {
+MazeTok run_with(uint64_t seed, const ResearchFlags& f, bool stage_a, std::string* digest = nullptr,
+                 IJobDispatcher* jobs = nullptr, MazeAdvisorStats* stats = nullptr, const std::string& z3_scratch = "") {
   const int step_budget = stage_a ? 80 : 160;  // keeps the unit test quick
   MazeResearchAdvisor adv(f);
+  adv.set_jobs(jobs);
+  if (!z3_scratch.empty()) adv.z3_scratch = z3_scratch;
   std::string err;
   MazeTok t;
   if (!adv.prepare(err)) {
@@ -647,6 +655,8 @@ MazeTok run_with(uint64_t seed, const ResearchFlags& f, bool stage_a, std::strin
   t = run_b1(seed, &r, stage_a, step_budget);
   t.research = adv.digest();
   if (digest) *digest = adv.digest();
+  if (stats) *stats = adv.stats();
+  if (t.err.empty() && !adv.error().empty()) t.err = adv.error();
   return t;
 }
 
@@ -813,6 +823,157 @@ void test_maze_wiring(const std::string& dir) {
   std::remove((dir + "/research_dynamics.txt").c_str());
 }
 
+
+// ---- Tree of Thoughts and the constraint peer inside the maze decide loop ----
+
+void test_own_graph() {
+  // A corridor he walked: (0,0)..(4,0). He saw the key at (2,1) below (2,0) and a shut door at (5,0).
+  ExperienceMap map;
+  OwnSight sight;
+  for (int x = 0; x <= 4; ++x) {
+    SelfObservation o;
+    o.x = x;
+    map.stand(o);
+    uint8_t open = 0;
+    if (x > 0) open |= 1u << kWest;
+    if (x < 4) open |= 1u << kEast;
+    if (x == 2) open |= 1u << kSouth;
+    map.sense(x, 0, open);
+    sight.see(x, 0, 0, x == 2 ? uint8_t(1u << kSouth) : 0, x == 4 ? uint8_t(1u << kEast) : 0, 0, false, false, false, false);
+  }
+  const OwnGraph og = build_own_graph(map, sight, 0, 0, false, false);
+  const GatedPlan p = GatedGraphSolver::solve(og.g);
+  check(og.asked && og.goal_kind == "door" && og.g.doors == 1 && og.g.keys.size() == 1, "own graph: a door and a key he saw");
+  check(p.reachable && GatedGraphSolver::describe(p).find("key0") != std::string::npos &&
+            GatedGraphSolver::describe(p).find("open0") != std::string::npos,
+        "own graph: the plan fetches the key, then opens the door");
+  check(first_plan_act(og, p, 0, 0) == kEast, "own graph: first action walks toward the key");
+  const OwnGraph held = build_own_graph(map, sight, 4, 0, true, false);
+  check(first_plan_act(held, GatedGraphSolver::solve(held.g), 4, 0) == kUse, "own graph: next to the door with the key, open it");
+  OwnSight no_key = sight;
+  no_key.keys.clear();
+  check(!GatedGraphSolver::solve(build_own_graph(map, no_key, 0, 0, false, false).g).reachable,
+        "own graph: no key seen, the door cannot be planned through");
+  const OwnGraph opened = build_own_graph(map, sight, 0, 0, true, true);
+  check(!opened.asked, "own graph: door open and no exit seen, nothing to ask");
+  OwnSight pit = sight;
+  pit.pits.insert(place_key(2, 0));
+  check(!GatedGraphSolver::solve(build_own_graph(map, pit, 0, 0, false, false).g).reachable, "own graph: never plans through a pit he saw");
+  // Tree of Thoughts on the same map: identical at every thread count.
+  SelfObservation here;
+  std::string ref;
+  bool same = true;
+  for (int workers : kWorkerCounts) {
+    JoinJobDispatcher jobs(workers);
+    TotConfig cfg;
+    cfg.breadth = 3;
+    cfg.depth = 3;
+    const TotResult r = own_map_tree(map, sight, here, false, cfg, &jobs);
+    if (ref.empty()) ref = r.digest;
+    same = same && r.digest == ref && !r.best.moves.empty() && r.best.moves.front() == kEast;
+  }
+  check(same, "own-map Tree of Thoughts heads east toward the key, identical at 1/2/4/8/12 workers");
+}
+
+void test_plan_wiring(const std::string& dir, const std::string& z3, const std::string& z3_sha, const std::vector<PinnedFile>& libs) {
+  const std::string log = dir + "/research_b1_plans.jsonl";
+  // Tree of Thoughts alone on B1.
+  {
+    ResearchFlags f;
+    f.tree_of_thoughts = true;
+    f.log = log;
+    std::remove(log.c_str());
+    MazeAdvisorStats st;
+    const MazeTok a = run_with(1, f, false, nullptr, nullptr, &st);
+    std::string head, err;
+    size_t lines = 0;
+    check(SideLog::verify(log, head, lines, err) && lines > 0, "B1 Tree of Thoughts side chain verifies");
+    std::remove(log.c_str());
+    const MazeTok b = run_with(1, f, false);
+    check(same_walk(a, b) && a.research == b.research, "B1 with Tree of Thoughts repeats exactly");
+    check(st.tot_runs > 0 && st.tot_proposals > 0 && a.applied > 0, "Tree of Thoughts plan moves reach the root as prior shares");
+    std::printf("  B1 Tree of Thoughts: ok=%d exit=%d runs=%llu proposals=%llu applied=%llu err=%s\n", int(a.ok), int(a.exit),
+                (unsigned long long)st.tot_runs, (unsigned long long)st.tot_proposals, (unsigned long long)a.applied, a.err.c_str());
+  }
+  // The constraint peer with Go-Explore on B1 (he has to see the key and the door first).
+  {
+    ResearchFlags f;
+    f.go_explore = true;
+    f.smt = true;
+    f.log = log;
+    std::remove(log.c_str());
+    MazeAdvisorStats st;
+    const MazeTok a = run_with(1, f, false, nullptr, nullptr, &st);
+    std::string head, err;
+    size_t lines = 0;
+    check(SideLog::verify(log, head, lines, err) && lines > 0, "B1 constraint peer side chain verifies");
+    std::remove(log.c_str());
+    const MazeTok b = run_with(1, f, false);
+    check(same_walk(a, b) && a.research == b.research, "B1 with the constraint peer repeats exactly");
+    check(st.smt_questions > 0 && st.smt_proposals > 0, "door/key plans from his own map reach the root");
+    std::printf("  B1 constraint peer: ok=%d exit=%d questions=%llu unreachable=%llu proposals=%llu applied=%llu err=%s\n",
+                int(a.ok), int(a.exit), (unsigned long long)st.smt_questions, (unsigned long long)st.smt_unreachable,
+                (unsigned long long)st.smt_proposals, (unsigned long long)a.applied, a.err.c_str());
+  }
+  // Stage A, both planners.
+  {
+    ResearchFlags f;
+    f.tree_of_thoughts = true;
+    f.smt = true;
+    MazeAdvisorStats st;
+    const MazeTok a = run_with(0, f, true, nullptr, nullptr, &st), b = run_with(0, f, true);
+    check(same_walk(a, b) && a.research == b.research, "Stage A with Tree of Thoughts and the constraint peer repeats exactly");
+    std::printf("  Stage A plans: ok=%d exit=%d tot=%llu smt_questions=%llu applied=%llu err=%s\n", int(a.ok), int(a.exit),
+                (unsigned long long)st.tot_proposals, (unsigned long long)st.smt_questions, (unsigned long long)a.applied,
+                a.err.c_str());
+  }
+  // Thread counts: all planners on, Tree of Thoughts scoring on 1/2/4/8/12 workers, 4 B1 seeds folded in order.
+  {
+    std::string ref;
+    bool same = true;
+    for (int workers : kWorkerCounts) {
+      JoinJobDispatcher jobs(workers);
+      std::string fold;
+      for (int i = 0; i < 4; ++i) {
+        ResearchFlags f;
+        f.go_explore = true;
+        f.tree_of_thoughts = true;
+        f.smt = true;
+        const MazeTok t = run_with(uint64_t(20 + i), f, false, nullptr, &jobs);
+        fold += t.actions + t.world + t.chain + t.research + std::to_string(int(t.ok)) + "\n";
+      }
+      const std::string sha = sha256_hex(fold);
+      if (ref.empty()) ref = sha;
+      same = same && sha == ref;
+    }
+    check(same, "B1 Go-Explore + Tree of Thoughts + constraint peer: 4-seed fold identical at 1/2/4/8/12 workers");
+    std::printf("  B1 planners 4-seed fold %.16s\n", ref.c_str());
+  }
+  // Pinned Z3 beside the built-in planner.
+  if (!z3.empty() && !z3_sha.empty()) {
+    ResearchFlags f;
+    f.go_explore = true;
+    f.smt = true;
+    f.smt_binary = z3;
+    f.smt_sha = std::string(64, '0');
+    const MazeTok bad = run_with(1, f, false);
+    check(!bad.ok && bad.err.find("pin") != std::string::npos, "maze run with a wrong Z3 pin fails closed");
+    f.smt_sha = z3_sha;
+    if (!libs.empty()) {
+      f.smt_lib = libs.front().path;
+      f.smt_lib_sha = libs.front().sha256_hex;
+    }
+    MazeAdvisorStats st;
+    const MazeTok a = run_with(1, f, false, nullptr, nullptr, &st, dir + "/research_maze_z3.smt2");
+    check(a.err.find("Z3") == std::string::npos && st.z3_checks > 0 && st.z3_agree == st.z3_checks, "pinned Z3 agrees with every door/key plan it checked");
+    std::printf("  B1 with pinned Z3: z3_checks=%llu agree=%llu err=%s\n", (unsigned long long)st.z3_checks,
+                (unsigned long long)st.z3_agree, a.err.c_str());
+  } else {
+    std::printf("  (pinned Z3 maze check skipped: pass --z3=PATH --z3-sha=HEX)\n");
+  }
+  std::remove(log.c_str());
+}
+
 void report() {
   std::printf("seed  shortest  go_explore  least_tried\n");
   uint64_t ge_total = 0, lt_total = 0;
@@ -958,6 +1119,8 @@ int main(int argc, char** argv) {
     test_context_budget();
     test_ascii_observation(".");
     test_maze_wiring(".");
+    test_own_graph();
+    test_plan_wiring(".", z3, z3_sha, libs);
   }
   if (rep) report();
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

@@ -2,6 +2,7 @@
 
 #include "pchie/research/Digest.h"
 
+#include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -29,7 +30,9 @@ MazeResearchAdvisor::MazeResearchAdvisor(ResearchFlags flags) : f_(std::move(fla
   trace_.run_id = "maze";
 }
 
-bool MazeResearchAdvisor::engaged() const { return f_.go_explore || f_.lookahead || f_.step_scorer || f_.reflexion; }
+bool MazeResearchAdvisor::engaged() const {
+  return f_.go_explore || f_.lookahead || f_.step_scorer || f_.reflexion || f_.tree_of_thoughts || f_.smt;
+}
 
 bool MazeResearchAdvisor::prepare(std::string& err) {
   if (f_.lookahead) {
@@ -45,6 +48,20 @@ bool MazeResearchAdvisor::prepare(std::string& err) {
       return false;
     }
     model_ready_ = true;
+  }
+  if (!f_.smt_binary.empty()) {
+    PinnedSolver pin{f_.smt_binary, f_.smt_sha, 20000000, {}};
+    if (!f_.smt_lib.empty()) pin.companions.push_back(PinnedFile{f_.smt_lib, f_.smt_lib_sha});
+    if (PinnedZ3::file_sha256(f_.smt_binary) != f_.smt_sha) {
+      err = "research: the Z3 binary does not match its pin (fail closed)";
+      return false;
+    }
+    if (!f_.smt_lib.empty() && PinnedZ3::file_sha256(f_.smt_lib) != f_.smt_lib_sha) {
+      err = "research: the Z3 library does not match its pin (fail closed)";
+      return false;
+    }
+    z3_.reset(new PinnedZ3(pin));
+    if (z3_scratch.empty()) z3_scratch = (f_.log.empty() ? std::string("research") : f_.log) + ".z3.smt2";
   }
   std::ostringstream o;
   o << "{\"format\":\"pchie.research.v1\",\"event\":\"start\",\"flags\":\"" << f_.identity_line() << "\",\"dynamics\":\""
@@ -114,6 +131,8 @@ bool MazeResearchAdvisor::advise(uint32_t task, const rl::ResearchView& view, co
   close_transition(o);
   map_.stand(o);
   map_.sense(o.x, o.y, view.open_mask);
+  sight_.see(o.x, o.y, view.danger_mask, view.key_mask, view.door_mask, view.exit_mask, view.key_here, view.at_exit,
+             view.have_key, opened_);
   ++st_.decisions;
   last_task_ = task;
   last_obs_ = o;
@@ -148,6 +167,68 @@ bool MazeResearchAdvisor::advise(uint32_t task, const rl::ResearchView& view, co
       }
     }
   }
+  std::ostringstream extra;
+  if (f_.tree_of_thoughts) {
+    TotConfig cfg;
+    cfg.breadth = f_.tot_breadth;
+    cfg.depth = f_.tot_depth;
+    cfg.beam = f_.tot_breadth;
+    const TotResult tr = own_map_tree(map_, sight_, o, opened_, cfg, jobs_);
+    ++st_.tot_runs;
+    const int32_t tok = tr.best.moves.empty() ? -1 : token_of_act(tr.best.moves.front());
+    const bool use = tok >= 0 && tr.best.score_q20 > 0 && is_legal(tok);
+    if (use) {
+      proposals.push_back(rl::ResearchProposal{tok, tot_share_q20, kFromTreeOfThoughts});
+      ++st_.tot_proposals;
+    }
+    extra << ",\"tot\":{\"best\":\"" << tr.best.text << "\",\"score_q20\":" << tr.best.score_q20
+          << ",\"evaluated\":" << tr.evaluated.size() << ",\"digest\":\"" << tr.digest.substr(0, 16) << "\"}";
+  }
+  if (f_.smt) {
+    const OwnGraph og = build_own_graph(map_, sight_, o.x, o.y, o.have_key, opened_);
+    if (og.asked) {
+      ++st_.smt_questions;
+      const GatedPlan plan = GatedGraphSolver::solve(og.g);
+      const std::string sig = sha256_hex(og.canonical());
+      extra << ",\"smt\":{\"goal\":\"" << og.goal_kind << "\",\"nodes\":" << og.g.nodes << ",\"graph\":\""
+            << sig.substr(0, 16) << "\",\"plan\":\"" << (plan.reachable ? GatedGraphSolver::describe(plan) : "-") << "\"";
+      if (!plan.reachable) {
+        ++st_.smt_unreachable;
+      } else {
+        const int32_t tok = token_of_act(first_plan_act(og, plan, o.x, o.y));
+        if (tok >= 0 && is_legal(tok)) {
+          proposals.push_back(rl::ResearchProposal{tok, smt_share_q20, kFromConstraint});
+          ++st_.smt_proposals;
+        }
+      }
+      if (z3_ && sig != last_graph_ && st_.z3_checks < z3_max_checks) {
+        last_graph_ = sig;
+        ++st_.z3_checks;
+        const int L = int(plan.actions.size());
+        bool agree;
+        std::string verdicts;
+        if (plan.reachable) {
+          const SmtResult at = z3_->check(GatedGraphSolver::smt2(og.g, L), z3_scratch);
+          const SmtResult below = L > 0 ? z3_->check(GatedGraphSolver::smt2(og.g, L - 1), z3_scratch) : SmtResult{SmtVerdict::Unsat, "", ""};
+          agree = at.verdict == SmtVerdict::Sat && below.verdict == SmtVerdict::Unsat;
+          verdicts = std::string(verdict_name(at.verdict)) + "/" + verdict_name(below.verdict);
+        } else {
+          const int H = og.g.nodes * 3 + 2;  // longer than any plan on this graph (moves, one pickup, one open)
+          const SmtResult r = z3_->check(GatedGraphSolver::smt2(og.g, H > 64 ? 64 : H), z3_scratch);
+          agree = r.verdict == SmtVerdict::Unsat;
+          verdicts = verdict_name(r.verdict);
+        }
+        std::remove(z3_scratch.c_str());
+        extra << ",\"z3\":\"" << verdicts << "\"";
+        if (!agree) {
+          err = "research: pinned Z3 disagrees with the built-in plan (" + verdicts + ", fail closed)";
+          return false;
+        }
+        ++st_.z3_agree;
+      }
+      extra << "}";
+    }
+  }
   std::ostringstream sc;
   if (f_.step_scorer) {
     for (int32_t tok : legal) {
@@ -167,7 +248,7 @@ bool MazeResearchAdvisor::advise(uint32_t task, const rl::ResearchView& view, co
   for (size_t i = 0; i < proposals.size(); ++i)
     lg << (i ? "," : "") << '[' << proposals[i].token << ',' << proposals[i].share_q20 << ',' << int(proposals[i].source)
        << ']';
-  lg << "],\"scores\":[" << sc.str() << "]";
+  lg << "],\"scores\":[" << sc.str() << "]" << extra.str();
   if (!log_.append(lg.str(), err)) return false;
   return true;
 }

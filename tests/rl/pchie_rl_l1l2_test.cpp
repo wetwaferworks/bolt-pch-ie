@@ -813,6 +813,7 @@ static int maze_run(int argc, char** argv) {
     advisor = std::make_unique<research::MazeResearchAdvisor>(research_args.flags);
     std::string rerr;
     if (!advisor->prepare(rerr)) { std::printf("[RLON] %s\n", rerr.c_str()); return 3; }
+    advisor->set_jobs(&disp_);  // Tree of Thoughts scoring; same result at every thread count
     r.research = advisor.get();
     std::printf("[RLON] research {%s}\n", research_args.flags.identity_line().c_str());
   }
@@ -929,6 +930,12 @@ static int maze_run(int argc, char** argv) {
                 (unsigned long long)advisor->stats().lookahead_proposals,
                 (unsigned long long)advisor->stats().lookahead_unknown_state, (unsigned long long)advisor->stats().transitions,
                 (unsigned long long)advisor->stats().lessons, advisor->log().head().c_str(), advisor->digest().c_str());
+  if (advisor)
+    std::printf("[RLON] research label=%s tot_runs=%llu tot=%llu smt_questions=%llu smt_unreachable=%llu smt=%llu z3_checks=%llu z3_agree=%llu\n",
+                label.c_str(), (unsigned long long)advisor->stats().tot_runs, (unsigned long long)advisor->stats().tot_proposals,
+                (unsigned long long)advisor->stats().smt_questions, (unsigned long long)advisor->stats().smt_unreachable,
+                (unsigned long long)advisor->stats().smt_proposals, (unsigned long long)advisor->stats().z3_checks,
+                (unsigned long long)advisor->stats().z3_agree);
   std::printf("[RLON] g5 label=%s tuples_rehash=%s live_pages_end=%u\n", label.c_str(), rehash ? "PASS" : "FAIL",
               m.pool_swa().live_pages() + m.pool_glob().live_pages());
   delete mem;

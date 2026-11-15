@@ -7,7 +7,7 @@ off by default and live in their own library (`pchie_research`), so `pchie_core`
 | Layer | Flag | Header | What it does |
 |---|---|---|---|
 | L7 Go-Explore | `--research-go-explore` | `pchie/research/GoExplore.h` | Archive of every cell Little Nemo has reached (place, key state, view bucket). After a short burst of exploration he picks a promising cell, walks back to it over edges he has already walked, and explores from there. |
-| Constraint peer beside L6 | `--research-smt`, `--research-smt-binary=PATH` | `pchie/research/ConstraintSolver.h` | Exact answers for Stage B gate doors and for key/door ordering on his own map. A built-in solver is the reference; a pinned Z3 binary (SHA-256 checked, `smt.random_seed=0`, step-based `rlimit`) can run beside it and must agree. |
+| Constraint peer beside L6 | `--research-smt`, `--research-smt-binary=PATH --research-smt-sha=HEX` (and `--research-smt-lib=PATH --research-smt-lib-sha=HEX` for libz3.dll) | `pchie/research/ConstraintSolver.h` | Exact answers for Stage B gate doors and for key/door ordering on his own map. A built-in solver is the reference; a pinned Z3 binary (SHA-256 checked, `smt.random_seed=0`, step-based `rlimit`) can run beside it and must agree. |
 | Step scorer | `--research-step-scorer[=record\|enforce]` | `pchie/research/StepScorer.h` | Scores one proposed step from what he knows. Rule weights are the baseline; a frozen table pinned by SHA-256 is the slot for a trained scorer. Enforce mode may lower a prior, never raise one. |
 | Tree of Thoughts | `--research-tree-of-thoughts`, `--research-tot-breadth=N`, `--research-tot-depth=N` | `pchie/research/TreeOfThoughts.h` | Beam search over short plans. Scoring runs on many threads into separate slots; ranking uses a fixed tie order. |
 | Reflexion | `--research-reflexion` | `pchie/research/Reflexion.h` | Lessons from his own trace (pits, bumps, loops, door stalls, timeouts) written as receipts on a SHA-256 side chain. Putting them into his prompt is not wired and stays off until JD gives his go. |
@@ -21,17 +21,25 @@ off by default and live in their own library (`pchie_research`), so `pchie_core`
 `pchie_rl_l1l2_test --maze b1|stagea` takes the research flags too. The maze decide loop asks the research
 advisor (`pchie/rl/ResearchAdvisor.h`, `pchie/research/MazeAdvisor.h`) after the L2 query:
 
-- Go-Explore and the look-ahead may only move a share of the prior onto a legal, gate-checked edge; an edge
-  with no prior stays shut.
+- Go-Explore, the look-ahead, Tree of Thoughts and the constraint peer may only move a share of the prior onto
+  a legal, gate-checked edge; an edge with no prior stays shut.
 - The step scorer in enforce mode may only lower a prior.
 - Reflexion writes its lessons to `--research-lessons=PATH` at the end of the run.
 - The look-ahead needs `--research-dynamics=PATH --research-dynamics-sha=HEX` and fails closed on a wrong pin.
   `pchie_research_tool freeze OUT LOG...` learns a model from research side logs and prints its SHA-256.
+- Tree of Thoughts plans a few moves ahead on his own map (`pchie/research/OwnMapPlans.h`): proposals in
+  compass order, scoring on the run's worker threads into separate slots, ranking in a fixed order. The best
+  plan's first move gets a quarter of the prior.
+- The constraint peer builds a door/key graph from what he has seen: places he stood on, ways he saw open,
+  and the key, shut door, pits and exit he saw one step away. The goal is the exit if he saw it, otherwise
+  the door. The exact plan's first action gets half of the prior. With a pinned Z3 each new graph is checked
+  (up to 6 per run): reachable at the plan length and not one action shorter, or unreachable when the
+  built-in solver says so. Any disagreement stops the run.
 - Every decision is written to `--research-log=PATH`, a SHA-256 side chain (`pchie_research_tool verify LOG`).
 
 The advisor sees only `ResearchView`: his position relative to where he started, key state, open ways and
-pits next to him. Stage B has no view yet and refuses research flags. Tree of Thoughts and the constraint
-peer are not in the decide loop yet. With no research flag the loop is exactly what it was.
+pits, the key, a shut door or the exit one step away. Stage B has no view yet and refuses research flags.
+With no research flag the loop is exactly what it was.
 
 ## ASCII views (`--obs ascii`)
 
@@ -57,8 +65,11 @@ feet or next to him. The maze grid is used only to apply his actions and to grad
 - Tree of Thoughts is identical at 1, 2, 4, 8 and 12 workers;
 - the lesson ledger verifies and breaks on an edited line;
 - look-ahead in the frozen model walks the maze it learned in the shortest number of steps;
+- the own-map door/key graph plans key before door, opens next to the door, never plans through a pit he saw,
+  and own-map Tree of Thoughts is identical at 1, 2, 4, 8 and 12 workers;
 - in the maze runs: an idle advisor changes nothing on B1 and Stage A, Go-Explore and the look-ahead repeat
-  exactly, side chains verify, Stage B fails closed, and the B1 fold is identical at 1, 2, 4, 8 and 12 workers;
+  exactly, side chains verify, Stage B fails closed, and the B1 folds (Go-Explore alone, and Go-Explore with Tree of Thoughts and the constraint peer) are
+  identical at 1, 2, 4, 8 and 12 workers; with `--z3` the pinned Z3 agrees with every door/key plan it checks;
 - ASCII views: the engine's fixture capture verifies with the same SHA-256 the engine test prints, the
   run-length code round trips, any changed cell, digits, a wrong shape or another depth table fail closed,
   both context layouts fit, and the view side chain verifies.

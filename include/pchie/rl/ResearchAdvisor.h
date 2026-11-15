@@ -4,7 +4,7 @@
 //
 // What the advisor may do, per decision:
 //  - read ResearchView: what Little Nemo sees from where he stands (his position as shown in his observation,
-//    key state, the moves open to him, pits next to him). Never the maze layout, never a distance.
+//    key state, the moves open to him, and pits, the key, a shut door or the exit one step away). Never the maze layout, never a distance.
 //  - return proposals. A proposal is never a commit: it moves a share of root prior mass onto one root edge,
 //    and only after the same legality and PchGate checks an L2 memory hit goes through (fail closed).
 //  - return score caps (step scorer, enforce mode): a cap can only lower a root edge's prior, never raise it.
@@ -27,6 +27,9 @@ struct ResearchView {
   bool at_exit = false;
   uint8_t open_mask = 0;    // bit 0 North, 1 East, 2 South, 3 West: the move is open to him
   uint8_t danger_mask = 0;  // same bits: he sees a pit there
+  uint8_t key_mask = 0;     // same bits: he sees the key one step away
+  uint8_t door_mask = 0;    // same bits: he sees a shut door one step away
+  uint8_t exit_mask = 0;    // same bits: he sees the exit one step away
 };
 
 struct ResearchProposal {

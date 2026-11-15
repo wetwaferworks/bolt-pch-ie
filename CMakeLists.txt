@@ -256,7 +256,7 @@ add_library(pchie_research STATIC
   src/research/ResearchFlags.cpp src/research/ExperienceMap.cpp src/research/GoExplore.cpp
   src/research/ConstraintSolver.cpp src/research/StepScorer.cpp src/research/TreeOfThoughts.cpp
   src/research/Reflexion.cpp src/research/FrozenDynamics.cpp src/research/ContextBudget.cpp
-  src/research/SideLog.cpp src/research/MazeAdvisor.cpp src/research/AsciiObservation.cpp)
+  src/research/SideLog.cpp src/research/MazeAdvisor.cpp src/research/AsciiObservation.cpp src/research/OwnMapPlans.cpp)
 target_link_libraries(pchie_research PUBLIC pchie_core)
 add_executable(pchie_research_test tests/research/pchie_research_test.cpp)
 target_link_libraries(pchie_research_test PRIVATE pchie_research)
