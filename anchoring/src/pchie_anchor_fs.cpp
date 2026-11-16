@@ -82,6 +82,39 @@ void durable_write_file(const std::filesystem::path& path, const std::string& da
 #endif
 }
 
+void durable_append_file(const std::filesystem::path& path, const std::string& data) {
+#if defined(_WIN32)
+  const std::wstring wp = path.wstring();
+  HANDLE h = CreateFileW(wp.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open " + path.string() + " for append");
+  size_t off = 0;
+  bool ok = true;
+  while (ok && off < data.size()) {
+    DWORD w = 0;
+    const DWORD chunk = DWORD(data.size() - off > 0x40000000u ? 0x40000000u : data.size() - off);
+    ok = WriteFile(h, data.data() + off, chunk, &w, nullptr) && w == chunk;
+    off += w;
+  }
+  ok = ok && FlushFileBuffers(h);
+  CloseHandle(h);
+  if (!ok) throw std::runtime_error("append fail " + path.string());
+#else
+  const int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0600);
+  if (fd < 0) throw std::runtime_error("cannot open " + path.string() + " for append");
+  size_t off = 0;
+  bool ok = true;
+  while (ok && off < data.size()) {
+    const ssize_t w = ::write(fd, data.data() + off, data.size() - off);
+    if (w < 0 && errno == EINTR) continue;
+    ok = w > 0;
+    if (ok) off += size_t(w);
+  }
+  ok = ok && ::fsync(fd) == 0;
+  ok = (::close(fd) == 0) && ok;
+  if (!ok) throw std::runtime_error("append fail " + path.string());
+#endif
+}
+
 ExclusiveFileLock::ExclusiveFileLock(const std::filesystem::path& lock_path) {
 #if defined(_WIN32)
   const std::wstring w = lock_path.wstring();

@@ -9,6 +9,10 @@ namespace pchie::anchor {
 // A crash leaves either the old file or the new one, never a torn file, and concurrent writers never share a temp name.
 void durable_write_file(const std::filesystem::path& path, const std::string& data);
 
+// Appends data to path (created if missing) and flushes it to disk before returning. Used for the anchor
+// log, whose lines are only ever appended; callers hold the log's lock around read-check-append.
+void durable_append_file(const std::filesystem::path& path, const std::string& data);
+
 // Exclusive lock on lock_path, held until destruction. Blocks until the lock is free. The OS drops it if the
 // process dies, so a crash never leaves a stale lock behind.
 class ExclusiveFileLock {

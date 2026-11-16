@@ -168,9 +168,13 @@ int pchie_anchor_main(int argc, char** argv) try {
     else if (!cf.empty()) { H32 h; uint64_t n; if (!rederive_visnav_chain(cf, h, n)) throw std::runtime_error("cannot read chain file"); a.chain_head_sha256 = hex(h); a.chain_length = n;
       const std::string expect = arg(argc, argv, "--expect-head"); if (!expect.empty() && expect != a.chain_head_sha256) throw std::runtime_error("chain file head " + a.chain_head_sha256 + " != run-reported head " + expect + " (refusing to anchor)"); }
     else { a.chain_head_sha256 = hex(unhex32(arg(argc, argv, "--chain-head"))); a.chain_length = std::stoull(arg(argc, argv, "--chain-length")); }
+    // One emit at a time per log: re-read the log under its lock, then check, link, append durably and sign the
+    // new head before letting go. Without it two emits read the same tail, both link to it and fork the chain.
+    ExclusiveFileLock log_lock(lg.d / "anchors.lock");
+    lg = Log(lg.d);
     for (auto& r : lg.recs) if (AnchorRecord::parse(r).run_id == a.run_id) throw std::runtime_error("run_id already anchored: " + a.run_id);
     a.prev_anchor_sha256 = lg.recs.empty() ? std::string(64, '0') : hex(sha(lg.recs.back())); a.emitted_utc = arg(argc, argv, "--emitted", now_utc());
-    const std::string line = a.canonical(); { std::ofstream f(lg.d / "anchors.log", std::ios::binary | std::ios::app); f << line << "\n"; }
+    const std::string line = a.canonical(); durable_append_file(lg.d / "anchors.log", line + "\n");
     lg.recs.push_back(line); lg.L.push_back(leaf_hash(Bytes(line.begin(), line.end())));
     Sth s = make_sth(lg, lg.L.size());
     std::cout << "anchor_index=" << lg.L.size() - 1 << "\nrecord_sha256=" << hex(a.record_hash()) << "\nchain_head_sha256=" << a.chain_head_sha256 << "\nchain_length=" << a.chain_length

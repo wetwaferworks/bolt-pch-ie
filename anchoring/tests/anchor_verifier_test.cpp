@@ -250,6 +250,37 @@ int main(int argc, char** argv) try {
     check(errors == 0 && n == size_t(threads * per) && qs.size() == n && next_q == uint32_t(n) && all_verify && no_temp,
           "concurrent signing: 8 threads x 4 signatures under the key lock use 32 distinct leaves, all verify, next_q = 32, no temp files left"); }
 
+  // ---- Concurrent emits from separate processes keep one unforked anchor chain (needs the tool's path) ----
+  if (argc > 3) {
+    const std::string exe = argv[3]; const fs::path lc = T / "log-concurrent";
+    check(tool({"init", lc.string(), "test-log-concurrent"}).rc == 0, "concurrent emit: throwaway log created");
+    const int procs = 8, per = 3; std::atomic<int> launched_ok{0}, dup_ok{0};
+    auto run = [&](const std::string& run_id) {
+      std::string cmd = "\"" + exe + "\" emit \"" + lc.string() + "\" --run-id " + run_id + " --label Scratch --weights " + W +
+                        " --chain-head " + hex(sha(run_id)) + " --chain-length 1 --emitted " + EMIT;
+#ifdef _WIN32
+      cmd = "\"" + cmd + " > NUL 2>&1\"";
+#else
+      cmd += " > /dev/null 2>&1";
+#endif
+      return std::system(cmd.c_str());
+    };
+    std::vector<std::thread> pool;
+    for (int t = 0; t < procs; ++t) pool.emplace_back([&, t] {
+      for (int i = 0; i < per; ++i) if (run("run-c-" + std::to_string(t) + "-" + std::to_string(i)) == 0) ++launched_ok;
+      if (t < 2 && run("run-c-same") == 0) ++dup_ok; });   // two processes race to anchor the same run id
+    for (auto& th : pool) th.join();
+    Log after(lc); std::set<std::string> ids; bool linked = true;
+    for (size_t j = 0; j < after.recs.size(); ++j) { auto aj = AnchorRecord::parse(after.recs[j]); ids.insert(aj.run_id);
+      if (aj.prev_anchor_sha256 != (j ? hex(sha(after.recs[j - 1])) : std::string(64, '0'))) linked = false; }
+    Sth latest = Sth::parse(trim(slurp(lc / "sth_latest.txt")));
+    std::cout << "  -- concurrent emit: " << after.recs.size() << " records, " << ids.size() << " run ids, linked=" << linked << ", same-id emits accepted=" << dup_ok.load() << "\n";
+    check(launched_ok == procs * per && dup_ok == 1 && after.recs.size() == size_t(procs * per + 1) && ids.size() == after.recs.size(),
+          "concurrent emit: 8 processes x 3 emits all land once, and of two racing emits of one run id exactly one is accepted");
+    check(linked && latest.tree_size == after.recs.size() && latest.root == after.root(after.recs.size()),
+          "concurrent emit: the anchor chain stays linked (no fork) and the latest signed head covers every record");
+  } else check(true, "concurrent emit: skipped (no tool path given)");
+
   // ---- An exhausted key refuses before it reserves anything ----
   { const fs::path kd = T / "exhausted-key"; fs::create_directories(kd); keygen(kd, "pchie.anchor.test.exhausted");
     const fs::path kp = kd / "signing.key";
