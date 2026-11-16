@@ -100,6 +100,27 @@ in a fixed order, so results do not depend on the number of threads. There are n
 - `PCHIE_TERNARY_TIER=scalar|ssse3|avx2|neon` lowers the kernel tier for testing; it can never raise it above
   what the CPU supports.
 
+## Research path (opt-in, measurements only)
+
+`include/pchie/pchie_ternary_research.h` holds the alternatives measured for Archie's Nov 16 brief. None of it is
+wired into a model, and the shipping path above does not use it.
+
+- Converter fits per group: absmean, the exact least-squares ternary fit (sort |w|, pick the k that maximizes
+  (sum of the k largest)^2 / k), and an iterative Lloyd fit; rounding rules half-to-even, half-away and seeded
+  stochastic, for offline conversion only.
+- Two more packings of the same trits, both bit-identical to the I2 reference through their kernels:
+  **B3B** (five trits per byte, block aligned, 26 bytes per 128 weights, 1.625 bpw, decoded with divide-by-3
+  multiplies against a plane-ordered activation copy) and **TL3** (sign plus 4-bit index per three weights, tiled
+  by 32 rows for byte-shuffle table lookups, 1.68 bpw).
+- I2 kernel variants: signed (`sign_epi8`, no activation sums) and zero-skip.
+- Integer base-2 softmax with three ways to get 2^f (bin-centred 256-entry table, 64-entry table with linear
+  interpolation, degree-3 minimax polynomial), any output precision from Q8 to Q30, and integer RMSNorm (int64 sum
+  of squares, adaptive fixed-point mean, 64-entry seed and two Newton steps). Tables are generated once with
+  60-digit decimal math and checked by the tests.
+- `pchie_ternary_research_test` checks all of it, including Archie's adversarial cases (outlier activation
+  channels inside blocks, alternating +1/-1 weights, extreme gammas); `pchie_ternary_measure` prints the tables.
+
+The polynomial coefficients and every table are our own fits; no outside code was consulted for any of it.
 ## Clean-room provenance
 
 Every line here was written from scratch from published descriptions and plain math. No source code from
