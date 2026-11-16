@@ -33,6 +33,7 @@ enum class TeslaFlag {
   Duplicate,        // the same step index arrived more than once
   OutOfRange,       // a step or interval index is past the watcher's limits (stream stopped)
   TooLong,          // more packets than the limits allow (stream stopped)
+  AfterEnd,         // a step packet or a second end-of-steps after the end of steps (stream stopped)
 };
 
 // Limits for an untrusted stream. The defaults match the sender's default chain length (4096 intervals).
@@ -52,6 +53,7 @@ inline const char* tesla_flag_name(TeslaFlag f) {
     case TeslaFlag::Duplicate: return "duplicate";
     case TeslaFlag::OutOfRange: return "out-of-range";
     case TeslaFlag::TooLong: return "too-long";
+    case TeslaFlag::AfterEnd: return "after-end";
   }
   return "unknown";
 }
@@ -95,6 +97,14 @@ class TeslaWatcher {
   void accept_step(const TeslaStepPacket& p) {
     if (stopped_) return;
     if (!count_packet()) return;
+    if (steps_ended_) {
+      // The end of steps relaxes the disclosure schedule for the trailing keys. A step after it would let a
+      // stream disclose keys early and still pass, so it fails the stream and stops the watch.
+      flag(TeslaFlag::AfterEnd, p.step_index, p.interval_index);
+      fail_at(0);
+      stop();
+      return;
+    }
     const uint64_t arrival = arrival_++;
     if (p.step_index >= max_steps_ || p.interval_index >= lim_.max_intervals) {
       flag(TeslaFlag::OutOfRange, p.step_index, p.interval_index);
@@ -303,7 +313,17 @@ class TeslaWatcher {
 
  public:
   // Call after the last step packet, before trailing disclosures, so those keys are not treated as early.
-  void note_end_of_steps() { steps_ended_ = true; }
+  // One-shot: a second call is flagged and stops the watch.
+  void note_end_of_steps() {
+    if (stopped_) return;
+    if (steps_ended_) {
+      flag(TeslaFlag::AfterEnd, 0, 0);
+      fail_at(0);
+      stop();
+      return;
+    }
+    steps_ended_ = true;
+  }
 
  private:
   static constexpr size_t kMaxFlags = 1024;

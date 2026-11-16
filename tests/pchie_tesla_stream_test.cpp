@@ -634,6 +634,26 @@ int main(int argc, char** argv) {
     check(threw, "watcher: a schedule with an oversized interval length is refused");
   }
   {
+    // Helia's report: an end-steps marker in the middle of a stream relaxed the disclosure schedule, so a key
+    // disclosed ahead of schedule passed with no flag and later steps were still released as verified.
+    TeslaWatcher w(honest40.commitment, honest40.sch);
+    for (size_t i = 0; i < 8; ++i) w.accept_step(honest40.steps[i]);          // interval 0 only
+    w.note_end_of_steps();                                                      // mid-stream end-steps
+    TeslaDisclosure k0; k0.interval_index = 0; k0.key = honest40.on_schedule[0].key;
+    w.accept_disclosure(k0);                                                    // K0 is not yet due
+    for (size_t i = 8; i < 16; ++i) w.accept_step(honest40.steps[i]);         // steps after the end
+    const TeslaWatchResult r = w.finish();
+    check(honest40.on_schedule[0].interval_index == 0 && has_flag(r, TeslaFlag::AfterEnd) && !r.all_verified,
+          "watcher: a step after end-steps fails the stream (no early key passes as verified)");
+    TeslaWatcher w2(honest40.commitment, honest40.sch);
+    for (const auto& st : honest40.steps) w2.accept_step(st);
+    w2.note_end_of_steps(); w2.note_end_of_steps();
+    for (const auto& d : honest40.on_schedule) w2.accept_disclosure(d);
+    for (const auto& d : honest40.trailing) w2.accept_disclosure(d);
+    const TeslaWatchResult r2 = w2.finish();
+    check(has_flag(r2, TeslaFlag::AfterEnd) && !r2.all_verified, "watcher: a second end-steps is flagged and fails the stream");
+  }
+  {
     // Helia's report: one step at a high index made finish() push one gap per missing index (gigabytes from
     // a three-line stream). The gap report is now a count plus the first kMaxGapIndices indices.
     TeslaSchedule big_i; big_i.I = TeslaSchedule::kMaxI; big_i.d = 2;   // I comes from the untrusted header
