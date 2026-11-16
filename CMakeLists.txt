@@ -270,9 +270,11 @@ target_link_libraries(pchie_research_tool PRIVATE pchie_research)
 # and one plug interface for many games (BALROG-style).
 # Its own library; pchie_core and every existing hash are unchanged. No model, about a second.
 add_library(pchie_harness STATIC
-  src/harness/Transcript.cpp src/harness/Task.cpp src/harness/Eval.cpp src/harness/GamePlug.cpp src/harness/Plugs.cpp)
+  src/harness/Transcript.cpp src/harness/Task.cpp src/harness/Eval.cpp src/harness/GamePlug.cpp src/harness/Plugs.cpp
+  src/harness/SkillChecks.cpp)
 target_link_libraries(pchie_harness PUBLIC pchie_research)
-add_executable(pchie_harness_test tests/harness/pchie_harness_test.cpp tests/harness/task_eval_test.cpp tests/harness/plugs_test.cpp)
+add_executable(pchie_harness_test tests/harness/pchie_harness_test.cpp tests/harness/task_eval_test.cpp tests/harness/plugs_test.cpp
+  tests/harness/skills_test.cpp)
 target_link_libraries(pchie_harness_test PRIVATE pchie_harness)
 add_test(NAME pchie_harness COMMAND pchie_harness_test --unit --dir ${CMAKE_CURRENT_BINARY_DIR})
 # Plug server for the thin Gymnasium adapter in tools/gym (off-path: no chain, no keys, no network).

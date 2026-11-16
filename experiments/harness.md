@@ -64,3 +64,12 @@ network connection. With Gymnasium installed, `register_all()` registers `Pchie/
 `Pchie/LithoKraftMazeStageA-v1`, `Pchie/LithoLatticeTestbedStub-v0` and `Pchie/CraftaxLikeGrid-v1`.
 Without it, the same class runs on small stand-ins, so the adapter tests run anywhere
 (CTest `pchie_gym_adapter`, when Python 3 is found).
+
+## Skill checks (`pchie/harness/SkillChecks.h`, scaffolding)
+
+After the lm-evaluation-harness idea: a small fixed suite with known answers, scored exactly, to run before
+and after any change to Little Nemo's model (an adapter, a dreamed LoRA) so a regression shows up as a number.
+Four tasks: `compass` (opposites and turns), `glyph_count` (count `#` in a row), `grid_lookup` (name what is in a cell
+of a small glyph grid) and `maze_rules` (multiple choice). `run_skill_suite(generate, jobs, side_log, run)`
+runs them through the eval; `regressions(before, after, tolerance)` lists tasks that dropped.
+The model bridge is any `Generate` function; wiring it to Little Nemo's greedy decode is the next step.

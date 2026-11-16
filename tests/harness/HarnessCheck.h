@@ -21,5 +21,6 @@ constexpr int kWorkerCounts[] = {1, 2, 4, 8, 12};
 
 void test_task_eval(const char* dir);
 void test_plugs(const char* dir);
+void test_skills(const char* dir);
 
 }  // namespace harness_test
