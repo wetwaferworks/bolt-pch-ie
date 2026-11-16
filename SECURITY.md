@@ -22,6 +22,14 @@ Our first security review, by Gizmo (ChatGPT Luna 6), raised the issues below. E
 
 The full list of changes is in [CHANGELOG.md](CHANGELOG.md) and [RELEASE-NOTES.md](RELEASE-NOTES.md).
 
+## 0.1.2 hardening review
+
+A second hardening review, by Helia (Google Hydrogen), cross-checked by Luna (ChatGPT Luna 6), plus a few issues found while checking their reports, produced further fixes. Each one was checked against the code and fixed, and each fix has its own tests. None of them moves a run hash.
+
+The pass covers CUDA backend checks (row limits, scratch sizing, and copy-mirror shutdown), model-loader checks (BF16 row multiples, finite norm, softcap and rope settings, file size and tensor alignment), KV page bounds, TESLA watcher limits (gap list and step-space caps, and a fail for steps after the end marker), serialized anchor emits with argument and cosignature checks, bounded Merkle ranges, constant-time compares, HMAC and HKDF key wiping, attestation and chain-verifier fixes, race-free join errors, the NEML ledger lock owner token, stricter JSON, MCP handle cleanup, and the sanitizer, fuzz and CUDA-gate build options.
+
+The full list is in [CHANGELOG.md](CHANGELOG.md) and [RELEASE-NOTES.md](RELEASE-NOTES.md).
+
 ## Reporting
 
 Please report security problems privately to the maintainer before you open a public issue.
