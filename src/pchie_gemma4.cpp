@@ -341,6 +341,8 @@ bool Gemma4Model::load(const std::string& path, std::string& err) {
     // Every weight must therefore have exactly the shape the config implies, and a type matvec can read.
     auto M = [&](const QTensor& q, uint64_t ne0, uint64_t ne1, const std::string& name) {
         if (q.type != 8 && q.type != 12 && q.type != 14 && q.type != 30) throw std::runtime_error("unsupported weight type " + name);
+        // The BF16 dot reads 8 elements at a time (CPU and GPU), so a BF16 row must be a multiple of 8.
+        if (q.type == 30 && q.ne0 % 8 != 0) throw std::runtime_error("BF16 weight row is not a multiple of 8 " + name);
         if (q.ne0 != ne0 || q.ne1 != ne1) throw std::runtime_error("weight shape does not match the config " + name);
     };
     try {

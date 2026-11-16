@@ -3,6 +3,7 @@
 // error (no crash, no read outside a buffer or the mapping). An out-of-vocabulary token is refused by embed().
 #include "pchie/pchie_gemma4.h"
 #include "pchie/pchie_gguf.h"
+#include "pchie/pchie_kquants_det.h"
 #include "pchie_tiny_gguf.h"
 
 #include <cstdio>
@@ -81,6 +82,16 @@ int main() {
     { Model m = good_model(); m.set("tokenizer.ggml.bos_token_id", 4); refused(m, "bos_oov", "bos_token_id outside the vocabulary is refused"); }
     { Model m = good_model(); m.set("tokenizer.ggml.padding_token_id", -7); refused(m, "pad_neg", "padding_token_id below -1 is refused"); }
 
+    {   // BF16 rows are read 8 at a time: a 36-wide FF (ffn_down rows of 36) would read past each row.
+        Model m = good_model(); m.set("gemma4.feed_forward_length", 36);
+        m.find("blk.0.ffn_gate.weight")->dims = {32, 36}; m.find("blk.0.ffn_up.weight")->dims = {32, 36}; m.find("blk.0.ffn_down.weight")->dims = {36, 32};
+        refused(m, "bf16_tail", "a BF16 weight whose row is not a multiple of 8 is refused (the dot would read past the row)");
+    }
+    {   // The dot itself never reads past n, even if a caller hands it a short row.
+        std::vector<uint16_t> w(12, 0x3F80);          // 1.0 in BF16
+        std::vector<float> x(12, 1.0f);
+        check(dot_bf16_f32(w.data(), x.data(), 12) == 12.0f, "dot_bf16_f32 on a 12-wide row sums exactly 12 elements");
+    }
     std::printf("[G4LOAD] %d PASS / %d FAIL\n", passes, fails);
     return fails ? 1 : 0;
 }

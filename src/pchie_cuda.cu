@@ -175,8 +175,10 @@ __global__ void k_mv_bf16(const uint16_t* W, const float* x0, float* y0, int row
     const float* x = x0 + size_t(bt) * n; float* y = y0 + size_t(bt) * rows;
     const uint16_t* w = W + size_t(r) * n;
     float lane[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    for (int i = 0; i < n; i += 8)
+    int i = 0;
+    for (; i + 8 <= n; i += 8)
         for (int k = 0; k < 8; ++k) { const float p = det_bf16_to_f32(w[i + k]) * x[i + k]; lane[k] = lane[k] + p; }
+    for (int k = 0; i + k < n; ++k) { const float p = det_bf16_to_f32(w[i + k]) * x[i + k]; lane[k] = lane[k] + p; }   // never hit: init refuses ne0 % 8
     const float a = (lane[0] + lane[1]) + (lane[2] + lane[3]);
     const float b = (lane[4] + lane[5]) + (lane[6] + lane[7]);
     y[r] = a + b;

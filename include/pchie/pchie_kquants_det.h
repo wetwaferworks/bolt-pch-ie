@@ -256,10 +256,14 @@ inline float dot_q8_0_q8_0(const BlockQ8_0W* w, const BlockQ8_0* x, int nb) noex
     return total;
 }
 // BF16 x fp32: 8 fixed lanes, lanes combined in a fixed tree. Pure function of inputs.
+// The loader only accepts rows that are a multiple of 8; a shorter last group (never hit by a valid model)
+// goes into the first lanes instead of reading past the row, so results for valid rows are unchanged.
 inline float dot_bf16_f32(const uint16_t* w, const float* x, int n) noexcept {
     float lane[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    for (int i = 0; i < n; i += 8)
+    int i = 0;
+    for (; i + 8 <= n; i += 8)
         for (int k = 0; k < 8; ++k) { const float p = bf16_to_fp32(w[i + k]) * x[i + k]; lane[k] = lane[k] + p; }
+    for (int k = 0; i + k < n; ++k) { const float p = bf16_to_fp32(w[i + k]) * x[i + k]; lane[k] = lane[k] + p; }
     const float a = (lane[0] + lane[1]) + (lane[2] + lane[3]);
     const float b = (lane[4] + lane[5]) + (lane[6] + lane[7]);
     return a + b;
