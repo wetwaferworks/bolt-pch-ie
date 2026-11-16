@@ -4,6 +4,7 @@
 // Not on the official chain; nothing here is hashed.
 #pragma once
 
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -139,6 +140,10 @@ class MiniJson final {
     while (i < s.size()) {
       const char c = s[i++];
       if (c == '"') return true;
+      if (static_cast<unsigned char>(c) < 0x20) {  // RFC 8259: control characters must be escaped
+        err = "json: raw control character in string";
+        return false;
+      }
       if (c != '\\') {
         o += c;
         continue;
@@ -160,12 +165,24 @@ class MiniJson final {
             err = "json: bad \\u escape";
             return false;
           }
-          if (cp >= 0xD800 && cp < 0xDC00 && i + 6 <= s.size() && s[i] == '\\' && s[i + 1] == 'u') {
-            size_t j = i + 2;
-            uint32_t lo = 0;
-            if (hex4(s, j, lo) && lo >= 0xDC00 && lo < 0xE000) {
-              cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-              i = j;
+          if (cp >= 0xDC00 && cp < 0xE000) {
+            err = "json: unpaired low surrogate";
+            return false;
+          }
+          if (cp >= 0xD800 && cp < 0xDC00) {
+            bool paired = false;
+            if (i + 6 <= s.size() && s[i] == '\\' && s[i + 1] == 'u') {
+              size_t j = i + 2;
+              uint32_t lo = 0;
+              if (hex4(s, j, lo) && lo >= 0xDC00 && lo < 0xE000) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                i = j;
+                paired = true;
+              }
+            }
+            if (!paired) {
+              err = "json: unpaired high surrogate";
+              return false;
             }
           }
           put_utf8(o, cp);
@@ -275,10 +292,26 @@ class MiniJson final {
                               s[j] == 'E' || s[j] == '+' || s[j] == '-'))
         ++j;
       const std::string num = s.substr(i, j - i);
-      char* end = nullptr;
       v.type = Type::Number;
-      v.number = std::strtod(num.c_str(), &end);
-      if (!end || *end != '\0' || num.empty() || num == "-") {
+      // RFC 8259 number grammar, parsed without the C locale: -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?
+      size_t k = 0;
+      auto digits = [&]() { const size_t s0 = k; while (k < num.size() && num[k] >= '0' && num[k] <= '9') ++k; return k - s0; };
+      bool good = true;
+      if (k < num.size() && num[k] == '-') ++k;
+      if (k < num.size() && num[k] == '0') ++k;
+      else good = digits() > 0;
+      if (good && k < num.size() && num[k] == '.') { ++k; good = digits() > 0; }
+      if (good && k < num.size() && (num[k] == 'e' || num[k] == 'E')) {
+        ++k;
+        if (k < num.size() && (num[k] == '+' || num[k] == '-')) ++k;
+        good = digits() > 0;
+      }
+      good = good && k == num.size();
+      if (good) {
+        const auto r = std::from_chars(num.data(), num.data() + num.size(), v.number);
+        good = r.ec == std::errc() && r.ptr == num.data() + num.size();
+      }
+      if (!good) {
         err = "json: bad number";
         return false;
       }

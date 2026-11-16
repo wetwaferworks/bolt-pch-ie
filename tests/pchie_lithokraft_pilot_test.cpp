@@ -153,6 +153,12 @@ static void test_minijson() {
   MiniJson bad;
   check(!MiniJson::parse("{\"a\":}", bad, err) && !MiniJson::parse("[1,2", bad, err) && !MiniJson::parse("{} x", bad, err),
         "MiniJson: malformed input is rejected");
+  check(!MiniJson::parse(std::string("\"") + char(1) + "\"", bad, err), "MiniJson: raw control characters are refused");
+  check(!MiniJson::parse("\"\\ud800\"", bad, err) && !MiniJson::parse("\"\\udc00\"", bad, err), "MiniJson: unpaired surrogates are refused");
+  check(MiniJson::parse("\"\\ud83d\\ude00\"", bad, err) && bad.str == "\xf0\x9f\x98\x80", "MiniJson: a paired surrogate decodes as UTF-8");
+  bool nums = true;
+  for (const char* n : {"01", "-01", "1.", "-.1", "1e", "1e+", "1e9999"}) nums = nums && !MiniJson::parse(n, bad, err);
+  check(nums, "MiniJson: non-JSON or overflowing numbers are refused");
   std::string deep(200, '[');
   check(!MiniJson::parse(deep, bad, err), "MiniJson: depth cap fails closed");
   check(MiniJson::quote("a\"b\\c\n") == "\"a\\\"b\\\\c\\n\"", "MiniJson: quote escapes");

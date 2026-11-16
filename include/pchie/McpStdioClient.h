@@ -32,12 +32,21 @@ class McpStdioClient final {
   // cmdline: full command line (exe quoted). stderr_log: file the game's stderr is written to.
   bool start(const std::wstring& cmdline, const std::wstring& workdir, const std::wstring& stderr_log,
              std::string& err) {
+    if (proc_ || in_w_ || out_r_) {  // never overwrite live handles; call stop() first
+      err = "already started";
+      return false;
+    }
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
     HANDLE in_r = nullptr, out_w = nullptr;
+    auto close_all = [&](HANDLE log_h) {
+      for (HANDLE* h : {&in_r, &out_w, &in_w_, &out_r_}) if (*h) { CloseHandle(*h); *h = nullptr; }
+      if (log_h && log_h != INVALID_HANDLE_VALUE) CloseHandle(log_h);
+    };
     if (!CreatePipe(&in_r, &in_w_, &sa, 1 << 16) || !CreatePipe(&out_r_, &out_w, &sa, 1 << 20)) {
       err = "CreatePipe failed";
+      close_all(nullptr);
       return false;
     }
     SetHandleInformation(in_w_, HANDLE_FLAG_INHERIT, 0);
@@ -46,6 +55,7 @@ class McpStdioClient final {
                              FILE_ATTRIBUTE_NORMAL, nullptr);
     if (log == INVALID_HANDLE_VALUE) {
       err = "cannot create stderr log";
+      close_all(nullptr);
       return false;
     }
     STARTUPINFOW si{};
@@ -64,6 +74,7 @@ class McpStdioClient final {
     CloseHandle(log);
     if (!ok) {
       err = "CreateProcess failed (" + std::to_string(GetLastError()) + ")";
+      for (HANDLE* h : {&in_w_, &out_r_}) if (*h) { CloseHandle(*h); *h = nullptr; }
       return false;
     }
     proc_ = pi.hProcess;
