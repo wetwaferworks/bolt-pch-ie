@@ -1,9 +1,13 @@
 // CUDA backend guards on a real GPU with tiny hand-built models (no model download, a few seconds).
 // A well-formed tiny model initialises; a model with a Q8_0 row wider than the matvec's shared partial-sum
-// array is refused at init with an error instead of being launched.
+// array is refused at init with an error instead of being launched. A model whose sliding head is wider than
+// its global head runs on the GPU with the same logits as the CPU (run under compute-sanitizer to see any
+// write past a scratch buffer).
 #include "pchie/pchie_cuda.h"
 #include "pchie/pchie_gemma4.h"
 #include "pchie_tiny_gguf.h"
+
+#include <cuda_runtime.h>
 
 #include <cstdio>
 #include <functional>
@@ -11,6 +15,8 @@
 
 using namespace pchie;
 using namespace pchie_tiny;
+// True when the device finished every launched kernel without an error.
+static void device_ok(bool& ok) { ok = cudaDeviceSynchronize() == cudaSuccess && cudaGetLastError() == cudaSuccess; }
 static int passes = 0, fails = 0;
 static void check(bool ok, const std::string& name) {
     std::printf("[CUDAGUARD] %-90s %s\n", name.c_str(), ok ? "PASS" : "FAIL");
@@ -58,6 +64,33 @@ int main() {
         }), "a Q8_0 model with d_ff 8192 loads on the CPU path");
         std::printf("           q8_wide -> %s\n", err.c_str());
         check(refused && err.find("ffn_down") != std::string::npos, "CudaBackend::init refuses Q8_0 ffn_down with 256 blocks per row (would overflow shared memory)");
+    }
+    {   // A sliding head (64) wider than the global head (32): the GPU scratch must be sized from the wider one.
+        // Run it under compute-sanitizer to see a write past q/k/v if the scratch is too small.
+        Model m = good_model();
+        m.swa_pattern = {1};
+        m.set("gemma4.attention.key_length_swa", 64); m.set("gemma4.attention.value_length_swa", 64);
+        m.set("gemma4.rope.dimension_count_swa", 64); m.set("gemma4.attention.head_count", 2);
+        m.find("blk.0.attn_q.weight")->dims = {32, 128}; m.find("blk.0.attn_output.weight")->dims = {128, 32};
+        m.find("blk.0.attn_k.weight")->dims = {32, 64}; m.find("blk.0.attn_v.weight")->dims = {32, 64};
+        m.find("blk.0.attn_q_norm.weight")->dims = {64}; m.find("blk.0.attn_k_norm.weight")->dims = {64};
+        bool ran = false, same = true; std::string err;
+        check(with_model(m, "wide_swa", [&](Gemma4Model& g) {
+            CudaBackend cb;
+            if (!cb.init(g, -1, 0, false, err)) { std::printf("           init error: %s\n", err.c_str()); return; }
+            ThreadPool pool(1);
+            Gemma4Model::Branch gb = g.new_branch(), cbr = g.new_branch();
+            std::vector<float> lg, lc;
+            for (int32_t tok : {2, 3, 3}) {
+                cb.forward(gb, tok, lg, pool);
+                g.forward(cbr, tok, lc, pool);
+                if (lg != lc) same = false;
+            }
+            device_ok(ran);
+            g.release(gb); g.release(cbr);
+        }), "a model whose sliding head is wider than its global head loads");
+        check(ran, "the GPU runs three tokens on it with no CUDA error");
+        check(same, "GPU logits equal the CPU logits on it");
     }
     std::printf("[CUDAGUARD] %d PASS / %d FAIL\n", passes, fails);
     return fails ? 1 : 0;

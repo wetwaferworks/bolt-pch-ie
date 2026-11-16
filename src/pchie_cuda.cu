@@ -384,14 +384,17 @@ bool CudaBackend::init(Gemma4Model& model, int gpu_layers, size_t reserve_mb, bo
         float* as = I.arena_swa; float* ag = I.arena_glob; size_t fs = ps.page_floats(), fg = pgl.page_floats();
         ps.on_copy = [as, fs](int32_t s, int32_t d) { cudaMemcpy(as + size_t(d) * fs, as + size_t(s) * fs, fs * 4, cudaMemcpyDeviceToDevice); };
         pgl.on_copy = [ag, fg](int32_t s, int32_t d) { cudaMemcpy(ag + size_t(d) * fg, ag + size_t(s) * fg, fg * 4, cudaMemcpyDeviceToDevice); };
-        const int D = C.d_model, HQ = C.n_head, HKV = C.n_head_kv, HG = C.hd_global;
+        // Scratch is sized from the widest head and the widest matvec input any layer uses (not only the
+        // global head and d_ff), so an unusual but accepted config cannot write past a buffer.
+        const CudaScratchDims SD = cuda_scratch_dims(C);
+        const int D = C.d_model;
         I.x = I.dalloc<float>(MB * D); I.u = I.dalloc<float>(MB * D); I.tmp = I.dalloc<float>(MB * D); I.pg2 = I.dalloc<float>(MB * D);
-        I.q = I.dalloc<float>(MB * HQ * HG); I.att = I.dalloc<float>(MB * HQ * HG);
-        I.k = I.dalloc<float>(MB * HKV * HG); I.v = I.dalloc<float>(MB * HKV * HG);
+        I.q = I.dalloc<float>(MB * SD.q_floats); I.att = I.dalloc<float>(MB * SD.q_floats);
+        I.k = I.dalloc<float>(MB * SD.kv_floats); I.v = I.dalloc<float>(MB * SD.kv_floats);
         I.g = I.dalloc<float>(MB * C.d_ff); I.up = I.dalloc<float>(MB * C.d_ff); I.pg = I.dalloc<float>(MB * C.d_ple);
         I.ple = I.dalloc<float>(MB * C.n_layer * C.d_ple); I.ctx = I.dalloc<float>(MB * C.n_layer * C.d_ple);
-        I.scores = I.dalloc<float>(MB * HQ * I.max_ctx); I.cs = I.dalloc<float>(MB * 2048);
-        I.xq = I.dalloc<uint8_t>(MB * (sizeof(BlockQ8_0) * size_t(C.d_ff / 32) + sizeof(BlockQ8_K) * size_t(C.d_ff / QK_K)) + 1024);
+        I.scores = I.dalloc<float>(MB * size_t(C.n_head) * I.max_ctx); I.cs = I.dalloc<float>(MB * 2048);
+        I.xq = I.dalloc<uint8_t>(MB * SD.xq_bytes + 1024);
         I.pt_swa = I.dalloc<int32_t>(MB * ps.max_pages()); I.pt_glob = I.dalloc<int32_t>(MB * pgl.max_pages());
         I.d_t = I.dalloc<uint32_t>(MB); I.d_j0 = I.dalloc<uint32_t>(MB * 2);
         if (gpu_lm_head) { I.tok_embd = I.up_tensor(model.tok_embd()); I.logits = I.dalloc<float>(MB * C.n_vocab); }

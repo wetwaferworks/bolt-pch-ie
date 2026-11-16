@@ -4,8 +4,13 @@
 // (sb[warps][kCudaMvMaxBlocks]) and add them in order in lane 0, which is how the GPU stays bit-identical
 // to the CPU. A row with more blocks than that would write past the shared array, so such a weight is
 // refused at CudaBackend::init (the caller then runs on the CPU) instead of being launched.
+// The scratch buffers are sized from the widest input and output any matvec can see, so a model whose
+// sliding head is wider than its global head, or whose d_model or d_ple is wider than d_ff, still fits.
 #pragma once
 #include "pchie/pchie_gemma4.h"
+#include "pchie/pchie_kquants_det.h"
+#include "pchie/pchie_q4_det.h"
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -41,6 +46,24 @@ inline bool cuda_matvec_shape_ok(uint32_t type, uint64_t ne0, uint64_t ne1, std:
         default:
             return no("weight type the CUDA matvec does not run");
     }
+}
+
+// Sizes of the per-branch scratch buffers (in floats, or elements of the activation width).
+struct CudaScratchDims {
+    size_t head_dim = 0;      // widest head: max(hd_global, hd_swa)
+    size_t q_floats = 0;      // n_head * head_dim   (q, att)
+    size_t kv_floats = 0;     // n_head_kv * head_dim (k, v)
+    size_t act_width = 0;     // widest matvec input: max(d_ff, d_model, d_ple, n_head * head_dim)
+    size_t xq_bytes = 0;      // quantised activation scratch for one branch (Q8_0 and Q8_K views share it)
+};
+inline CudaScratchDims cuda_scratch_dims(const Gemma4Config& C) {
+    CudaScratchDims d;
+    d.head_dim = size_t(std::max(C.hd_global, C.hd_swa));
+    d.q_floats = size_t(C.n_head) * d.head_dim;
+    d.kv_floats = size_t(C.n_head_kv) * d.head_dim;
+    d.act_width = std::max({size_t(C.d_ff), size_t(C.d_model), size_t(C.d_ple), d.q_floats});
+    d.xq_bytes = sizeof(BlockQ8_0) * ((d.act_width + 31) / 32) + sizeof(BlockQ8_K) * ((d.act_width + QK_K - 1) / QK_K);
+    return d;
 }
 
 } // namespace pchie
