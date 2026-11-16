@@ -138,15 +138,11 @@ static void test_join_dispatcher() {
     const int back = m.dispatcher_size();
     check(mid == 8 && back == 1, "unit: NemotronModel::set_dispatcher routes size 8 then back to serial 1");
   }
-  JoinJobDispatcher z(0);
-  JoinJobDispatcher n(-3);
-  JoinJobDispatcher h(17);
-  int called = 0;
-  z.parallel_for(4, [&](int) { ++called; });
-  n.parallel_for(4, [&](int) { ++called; });
-  h.parallel_for(4, [&](int) { ++called; });
-  check(z.size() == 0 && n.size() == 0 && h.size() == 0 && called == 0,
-        "unit: workers <=0 or >16 are rejected (no-op parallel_for)");
+  int refused = 0;
+  for (int bad : {0, -3, 17}) {
+    try { JoinJobDispatcher d(bad); } catch (const std::invalid_argument&) { ++refused; }
+  }
+  check(refused == 3, "unit: workers <=0 or >16 are refused when the dispatcher is built");
 }
 
 static void test_chain_trace() {

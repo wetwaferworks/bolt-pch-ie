@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -19,9 +20,8 @@ class JoinJobDispatcher final : public IJobDispatcher {
 
   explicit JoinJobDispatcher(int workers) {
     if (workers <= 0 || workers > kMaxWorkers)
-      workers_ = 0;
-    else
-      workers_ = workers;
+      throw std::invalid_argument("JoinJobDispatcher: workers must be in 1..16");
+    workers_ = workers;
   }
 
   void parallel_for(int count, const std::function<void(int)>& fn) override {

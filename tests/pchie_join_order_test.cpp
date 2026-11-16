@@ -3,6 +3,7 @@
 // worker threads through JoinJobDispatcher) must fold to bit-identical values and hashes.
 // A naive arrival-order float sum is shown to differ, so the test can actually fail.
 #include "pchie/DeterministicJoin.h"
+#include <thread>
 #include "pchie/JoinJobDispatcher.h"
 #include "pchie/Sha256.h"
 
@@ -104,6 +105,24 @@ int main() {
   {
     DeterministicJoin<float> j(2);
     check(!j.deposit(2, 1.f), "out-of-range work id refused");
+  }
+  {
+    DeterministicJoin<float> j(4);
+    std::thread a([&] { for (int k = 0; k < 2000; ++k) j.deposit(uint64_t(100 + k), 1.f); });
+    std::thread b([&] { for (int k = 0; k < 2000; ++k) j.deposit(uint64_t(200 + k), 2.f); });
+    a.join(); b.join();
+    float s = 0; std::string e;
+    check(!j.complete() && !fold_sum(j, s, e) && e == "work id out of range", "racing out-of-range deposits fail closed without a shared error string");
+  }
+  {
+    DeterministicJoin<float> j(1);
+    int wins = 0;
+    std::thread a([&] { if (j.deposit(0, 1.f)) ++wins; });
+    a.join();
+    std::thread b([&] { if (j.deposit(0, 2.f)) ++wins; });
+    b.join();
+    float s = 0; std::string e;
+    check(wins == 1 && !fold_sum(j, s, e) && e == "duplicate work id", "duplicate claim is detected by the atomic slot owner");
   }
   std::printf("JOIN-ORDER: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;

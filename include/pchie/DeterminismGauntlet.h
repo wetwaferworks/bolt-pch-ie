@@ -178,8 +178,7 @@ class DeterminismGauntlet final {
       GauntletRow row;
       row.workers = w;
       row.runs = runs_;
-      JoinJobDispatcher disp(w);
-      if (disp.size() != w) {
+      if (w <= 0 || w > JoinJobDispatcher::kMaxWorkers) {
         row.unique_hashes = 0;
         row.pass = false;
         all_pass = false;
@@ -187,6 +186,7 @@ class DeterminismGauntlet final {
         out.rows.push_back(row);
         continue;
       }
+      JoinJobDispatcher disp(w);
       // Always clear the hook, including if a run throws, so ext_ cannot dangle
       // after this JoinJobDispatcher leaves scope.
       struct DispatcherGuard {
