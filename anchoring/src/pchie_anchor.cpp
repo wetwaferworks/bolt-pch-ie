@@ -237,10 +237,10 @@ int pchie_anchor_main(int argc, char** argv) try {
     AnchorRecord a = AnchorRecord::parse(lg.recs[i]); Sth s = Sth::parse(trim(slurp(lg.d / "sth_latest.txt")));
     R("sth_signature", hbs_verify(lg.pub(), B(s.signed_text()), s.sig), "tree_size=" + std::to_string(s.tree_size) + " root=" + hex(s.root).substr(0, 16));
     R("sth_root_recompute", s.tree_size <= lg.L.size() && lg.root(s.tree_size) == s.root, "log entries reproduce STH root");
-    R("inclusion", verify_inclusion(lg.L[i], i, s.tree_size, inclusion_proof(lg.L, i, s.tree_size), s.root), "anchor " + std::to_string(i) + " in tree " + std::to_string(s.tree_size));
+    R("inclusion", i < s.tree_size && s.tree_size <= lg.L.size() && verify_inclusion(lg.L[i], i, s.tree_size, inclusion_proof(lg.L, i, s.tree_size), s.root), "anchor " + std::to_string(i) + " in tree " + std::to_string(s.tree_size));
     { bool ok = true; for (size_t j = 0; j < lg.recs.size(); ++j) { auto aj = AnchorRecord::parse(lg.recs[j]); if (aj.prev_anchor_sha256 != (j ? hex(sha(lg.recs[j - 1])) : std::string(64, '0'))) ok = false; } R("anchor_link", ok, "prev_anchor_sha256 chain over " + std::to_string(lg.recs.size()) + " records"); }
     const std::string wh = arg(argc, argv, "--witness-held");
-    if (!wh.empty()) { Sth h = Sth::parse(trim(slurp(wh))); bool ok = h.tree_size <= lg.L.size() && verify_consistency(h.tree_size, h.root, s.tree_size, s.root, h.tree_size <= s.tree_size ? consistency_proof(lg.L, h.tree_size, s.tree_size) : std::vector<H32>{});
+    if (!wh.empty()) { Sth h = Sth::parse(trim(slurp(wh))); bool ok = h.tree_size <= lg.L.size() && s.tree_size <= lg.L.size() && verify_consistency(h.tree_size, h.root, s.tree_size, s.root, h.tree_size <= s.tree_size ? consistency_proof(lg.L, h.tree_size, s.tree_size) : std::vector<H32>{});
       R("consistency_vs_witness", ok, "witness-held size=" + std::to_string(h.tree_size) + " -> log size=" + std::to_string(s.tree_size)); }
     const std::string wp = arg(argc, argv, "--witness-pub"), wid = arg(argc, argv, "--witness-id");
     if (!wp.empty()) { require_witness_id(wid); }

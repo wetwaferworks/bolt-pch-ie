@@ -53,6 +53,7 @@ inline H32 leaf_hash(const Bytes& d) { Bytes b{0x00}; b.insert(b.end(), d.begin(
 inline H32 node_hash(const H32& l, const H32& r) { Bytes b{0x01}; put(b, l); put(b, r); return sha(b); }
 inline size_t split_k(size_t n) { size_t k = 1; while (k * 2 < n) k *= 2; return k; }  // largest power of two < n
 inline H32 mth(const std::vector<H32>& L, size_t a, size_t b) {  // over leaf hashes L[a:b]
+  if (a > b || b > L.size()) throw std::out_of_range("merkle range past the end of the log");
   const size_t n = b - a; if (n == 0) return sha(Bytes{}); if (n == 1) return L[a];
   const size_t k = split_k(n); return node_hash(mth(L, a, a + k), mth(L, a + k, b));
 }
@@ -60,7 +61,11 @@ inline void path(const std::vector<H32>& L, size_t m, size_t a, size_t b, std::v
   const size_t n = b - a; if (n <= 1) return; const size_t k = split_k(n);
   if (m < k) { path(L, m, a, a + k, out); out.push_back(mth(L, a + k, b)); } else { path(L, m - k, a + k, b, out); out.push_back(mth(L, a, a + k)); }
 }
-inline std::vector<H32> inclusion_proof(const std::vector<H32>& L, size_t m, size_t n) { std::vector<H32> o; path(L, m, 0, n, o); return o; }
+// Tree sizes and indices come from files and the command line, so both proof builders refuse a tree larger
+// than the log they are given instead of reading past it.
+inline std::vector<H32> inclusion_proof(const std::vector<H32>& L, size_t m, size_t n) {
+  if (n > L.size() || m >= n) throw std::out_of_range("inclusion proof: index or tree size past the end of the log");
+  std::vector<H32> o; path(L, m, 0, n, o); return o; }
 inline void subproof(const std::vector<H32>& L, size_t m, size_t a, size_t b, bool known, std::vector<H32>& out) {
   const size_t n = b - a;
   if (m == n) { if (!known) out.push_back(mth(L, a, b)); return; }
@@ -68,7 +73,9 @@ inline void subproof(const std::vector<H32>& L, size_t m, size_t a, size_t b, bo
   if (m <= k) { subproof(L, m, a, a + k, known, out); out.push_back(mth(L, a + k, b)); }
   else { subproof(L, m - k, a + k, b, false, out); out.push_back(mth(L, a, a + k)); }
 }
-inline std::vector<H32> consistency_proof(const std::vector<H32>& L, size_t m, size_t n) { std::vector<H32> o; if (m > 0 && m < n) subproof(L, m, 0, n, true, o); return o; }
+inline std::vector<H32> consistency_proof(const std::vector<H32>& L, size_t m, size_t n) {
+  if (n > L.size() || m > n) throw std::out_of_range("consistency proof: tree size past the end of the log");
+  std::vector<H32> o; if (m > 0 && m < n) subproof(L, m, 0, n, true, o); return o; }
 // RFC 9162 s2.1.3.2
 inline bool verify_inclusion(const H32& leaf, uint64_t index, uint64_t size, const std::vector<H32>& p, const H32& root) {
   if (index >= size) return false; uint64_t fn = index, sn = size - 1; H32 r = leaf;

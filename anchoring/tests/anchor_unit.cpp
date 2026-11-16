@@ -44,5 +44,15 @@ int main() {
   CHECK(AnchorRecord::parse(a.canonical()).canonical() == a.canonical(), "anchor round-trip");
   bool threw = false; try { AnchorRecord::parse(a.canonical() + "|x=1"); } catch (...) { threw = true; } CHECK(threw, "non-canonical anchor rejected");
   std::cout << "keygen_s=" << kg << " sig_bytes=" << s1.size() << " fp_sample=" << f1 << "\n";
+  // Proof builders refuse ranges past the end of the log instead of reading beyond it
+  { std::vector<H32> L3(L.begin(), L.begin() + 3); int refused = 0;
+    try { mth(L3, 0, 5); } catch (const std::out_of_range&) { ++refused; }
+    try { mth(L3, 2, 1); } catch (const std::out_of_range&) { ++refused; }
+    try { inclusion_proof(L3, 0, 5); } catch (const std::out_of_range&) { ++refused; }
+    try { inclusion_proof(L3, 3, 3); } catch (const std::out_of_range&) { ++refused; }
+    try { consistency_proof(L3, 2, 9); } catch (const std::out_of_range&) { ++refused; }
+    try { consistency_proof(L3, 3, 2); } catch (const std::out_of_range&) { ++refused; }
+    CHECK(refused == 6, "merkle helpers refuse out-of-range trees (" + std::to_string(refused) + "/6)");
+    CHECK(inclusion_proof(L3, 2, 3).size() == 1 && consistency_proof(L3, 3, 3).empty() && mth(L3, 0, 3) == mth(L, 0, 3), "merkle helpers unchanged in range"); }
   std::cout << (fails ? "UNIT FAIL " : "UNIT PASS ") << passes << " passed, " << fails << " failed\n"; return fails ? 1 : 0;
 }
