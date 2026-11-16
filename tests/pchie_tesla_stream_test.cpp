@@ -438,6 +438,12 @@ int main(int argc, char** argv) {
     check(true, "watcher program: skipped (no --watcher path); library checks already cover the same logic");
   }
 
+  { StreamAuthSession session;
+    AttestationAppraisal forged; forged.status = AttestationStatus::Attested;
+    session.set_appraisal(forged);
+    check(session.appraisal().status != AttestationStatus::Attested,
+          "attestation: caller-supplied Attested without a quote is refused"); }
+
   // ---- Simulated attestation (no TPM). ----
   {
     const Bytes ak = sha("test-attestation-key");

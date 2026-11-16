@@ -283,7 +283,11 @@ class StreamAuthSession {
   void set_appraisal(AttestationAppraisal a) {
     if (!flags_.attest) return;
     attest_computed_ = true;
-    // Never accept a caller-supplied Attested when it was not actually appraised against a quote.
+    // A caller-supplied verdict is not evidence of a quote appraisal. Only the quote path can attest.
+    if (a.status == AttestationStatus::Attested) {
+      a.status = AttestationStatus::Rejected;
+      a.reason = "caller-supplied Attested verdict has no verified quote";
+    }
     appraisal_ = std::move(a);
   }
 

@@ -10,7 +10,8 @@ namespace pchie {
 
 struct ChainVerifyResult {
   bool ok = false;
-  size_t first_bad_index = size_t(-1);
+  size_t first_bad_index = size_t(-1);  // unknown unless honest prefix heads are supplied
+  bool first_bad_index_unknown = true;
   const char* message = "";
 };
 
@@ -29,16 +30,8 @@ class ChainVerifier final {
     }
     out.ok = false;
     out.message = "final head mismatch";
-    // Locate first diverging link by comparing prefix heads to a reference rebuild.
-    // Without stored intermediates, report 0 when any tamper changes the final head
-    // after the first record; scan by rebuilding expected prefixes from expected_head
-    // is impossible. Instead: rebuild good prefixes until head would need expected —
-    // for tamper tests we find the first index where appending that record alone from
-    // a fresh chain differs from appending the honest record (caller supplies honest
-    // expected_head from the honest chain). Practical approach: binary-unfriendly
-    // linear scan rebuilding two chains is not available without the honest log.
-    // Report first_bad_index = 0 as "mismatch somewhere"; tests check !ok.
-    out.first_bad_index = records.empty() ? size_t(-1) : 0;
+    // A final head alone cannot locate a divergent record. Leave the index unknown rather than inventing 0.
+    out.first_bad_index = size_t(-1);
     return out;
   }
 };

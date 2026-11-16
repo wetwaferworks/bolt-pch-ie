@@ -75,6 +75,7 @@ static void test_fnv_deterministic_and_tamper() {
   check(ok.ok, "ChainVerifier accepts honest FNV log");
   auto badv = ChainVerifier::verify(scratch, bad, a.head());
   check(!badv.ok, "ChainVerifier rejects tampered FNV log");
+  check(badv.first_bad_index == size_t(-1), "ChainVerifier does not claim record zero without reference prefixes");
 }
 
 static void test_sha256_known_vector_and_chain() {
