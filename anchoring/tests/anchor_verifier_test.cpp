@@ -281,6 +281,21 @@ int main(int argc, char** argv) try {
           "concurrent emit: the anchor chain stays linked (no fork) and the latest signed head covers every record");
   } else check(true, "concurrent emit: skipped (no tool path given)");
 
+  // ---- Short command lines and malformed cosignatures are refused cleanly ----
+  { bool all_refused = true; std::string bad;
+    const std::vector<std::pair<std::string, int>> cmds = {{"init", 4}, {"witness-keygen", 3}, {"witness-trust", 4}, {"fingerprint", 4}, {"emit", 3}, {"witness-packet", 5},
+                                                            {"cosign-local", 5}, {"witness-cosign", 6}, {"intake", 5}, {"prove-inclusion", 4}, {"prove-consistency", 5}, {"verify", 3}};
+    const fs::path nowhere = T / "short-args-never-created";
+    for (auto& c : cmds) for (int n = 2; n < c.second; ++n) {  // every length short of the minimum, the command name included
+      std::vector<std::string> a = {c.first}; for (int k = 2; k < n; ++k) a.push_back(nowhere.string());
+      Out o = tool(a); if (o.rc != 2 && o.rc != 3) { all_refused = false; bad += " " + c.first + "/" + std::to_string(n); } }
+    check(all_refused && !fs::exists(nowhere), "short command lines: every subcommand with too few arguments is refused with a usage error and touches nothing" + bad);
+    const fs::path lm = T / "log-malformed"; tool({"init", lm.string(), "test-log-malformed"});
+    spit(lm / "witness_registry.txt", "w1=" + std::string(96, 'a') + "\n"); spit(T / "cosig-nosig.txt", "garbage\n"); spit(T / "cosig-nosize.txt", "pchie.cosig.v1|witness=w1|sig=00\n");
+    Out a = tool({"intake", lm.string(), "w1", (T / "cosig-nosig.txt").string()}), b = tool({"intake", lm.string(), "w1", (T / "cosig-nosize.txt").string()});
+    check(a.rc == 1 && a.has("malformed cosignature") && b.rc == 1 && b.has("malformed cosignature"),
+          "intake: a cosignature with no signature field or no tree size is reported as malformed"); }
+
   // ---- An exhausted key refuses before it reserves anything ----
   { const fs::path kd = T / "exhausted-key"; fs::create_directories(kd); keygen(kd, "pchie.anchor.test.exhausted");
     const fs::path kp = kd / "signing.key";

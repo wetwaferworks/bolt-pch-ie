@@ -138,12 +138,15 @@ static bool check_policy(const Log& lg, const Sth& s, const WitnessPolicy& P, st
 int pchie_anchor_main(int argc, char** argv) try {
   if (argc < 2) { std::cerr << "usage: pchie_anchor <init|emit|witness-keygen|witness-trust|cosign-local|witness-cosign|witness-packet|intake|verify|fingerprint|prove-inclusion|prove-consistency> ...\n"; return 2; }
   const std::string cmd = argv[1];
+  // Every subcommand reads fixed positional arguments; refuse a short command line before touching argv.
+  auto need = [&](int n, const char* usage) { if (argc < n) throw std::runtime_error(std::string("usage: pchie_anchor ") + cmd + " " + usage); };
   if (cmd == "init") {  // init <dir> <log_id>
+    need(4, "<dir> <log_id>");
     fs::path d = argv[2]; if (fs::exists(d / "log_id.txt")) throw std::runtime_error("log exists; append-only, refusing re-init");
     fs::create_directories(d / "keys"); spit(d / "log_id.txt", std::string(argv[3]) + "\n"); keygen(d / "keys", "pchie.anchor.logkey.v1"); spit(d / "anchors.log", "");
     std::cout << "log_pub=" << trim(slurp(d / "keys" / "public.key")) << "\n"; return 0;
   }
-  if (cmd == "witness-keygen") { fs::path w = argv[2]; if (fs::exists(w / "signing.key")) throw std::runtime_error("witness key exists"); fs::create_directories(w); keygen(w, "pchie.anchor.witnesskey.v1"); std::cout << "witness_pub=" << trim(slurp(w / "public.key")) << "\n"; return 0; }
+  if (cmd == "witness-keygen") { need(3, "<witness_dir>"); fs::path w = argv[2]; if (fs::exists(w / "signing.key")) throw std::runtime_error("witness key exists"); fs::create_directories(w); keygen(w, "pchie.anchor.witnesskey.v1"); std::cout << "witness_pub=" << trim(slurp(w / "public.key")) << "\n"; return 0; }
   if (cmd == "witness-trust") {  // witness-trust <witness_dir> <log_pub_hex>: pin the log key before first contact
     if (argc < 4) throw std::runtime_error("usage: witness-trust <witness_dir> <log_pub_hex>");
     const fs::path w = argv[2]; const std::string want = hex(unhex(argv[3])); if (unhex(want).size() != 48) throw std::runtime_error("log_pub must be 48 bytes (96 hex digits)");
@@ -152,8 +155,9 @@ int pchie_anchor_main(int argc, char** argv) try {
     if (fs::exists(w / "last_cosigned_sth.txt")) { Sth held = Sth::parse(trim(slurp(w / "last_cosigned_sth.txt"))); if (!hbs_verify(unhex(want), B(held.signed_text()), held.sig)) { std::cout << "WITNESS REFUSED: the witness-held head was not signed by that key\n"; return 1; } }
     spit(pin, want + "\n"); std::cout << "pinned log key " << want.substr(0, 16) << "...\n"; return 0;
   }
-  if (cmd == "fingerprint") { std::cout << fingerprint_for(argv[2], argv[3], argc > 4 ? argv[4] : "") << "\n"; return 0; }  // fingerprint <head> <run_id> [chain_generation]
+  if (cmd == "fingerprint") { need(4, "<head> <run_id> [chain_generation]"); std::cout << fingerprint_for(argv[2], argv[3], argc > 4 ? argv[4] : "") << "\n"; return 0; }  // fingerprint <head> <run_id> [chain_generation]
   if (cmd == "emit") {  // emit <dir> --run-id --label --weights (--chain-file F | --chain-head H --chain-length N) [--witness-dir W --witness-id ID]
+    need(3, "<dir> --run-id ID --label L --weights W (--chain-file F | --chain-head H --chain-length N)");
     Log lg(argv[2]); AnchorRecord a; a.run_id = arg(argc, argv, "--run-id"); a.label = arg(argc, argv, "--label"); a.weights_sha256 = arg(argc, argv, "--weights");
     if (a.run_id.empty() || a.run_id.find('|') != std::string::npos) throw std::runtime_error("bad run_id"); if (!AnchorRecord::label_ok(a.label)) throw std::runtime_error("label must be Official|Scratch|Provisional");
     unhex32(a.weights_sha256);
@@ -190,12 +194,14 @@ int pchie_anchor_main(int argc, char** argv) try {
     return 0;
   }
   if (cmd == "witness-packet") {  // witness-packet <dir> <witness_id> <outfile>: tree heads + consistency proof ONLY (no records, no chains, no run data)
+    need(5, "<dir> <witness_id> <outfile>");
     Log lg(argv[2]); const std::string wid = require_witness_id(argv[3]); Packet p; p.log_pub = lg.pub(); p.new_sth = Sth::parse(trim(slurp(lg.d / "sth_latest.txt")));
     const fs::path held = lg.d / "witness_held" / (wid + ".txt");  // last head this witness cosigned (as recorded at intake)
     if (fs::exists(held)) { p.old_sth = Sth::parse(trim(slurp(held))); p.has_old = true; p.proof = consistency_proof(lg.L, p.old_sth.tree_size, p.new_sth.tree_size); }
     spit(argv[4], packet_text(p)); std::cout << "packet=" << argv[4] << " new_tree_size=" << p.new_sth.tree_size << (p.has_old ? " from=" + std::to_string(p.old_sth.tree_size) : std::string(" first-contact")) << " proof_nodes=" << p.proof.size() << "\n"; return 0;
   }
   if (cmd == "cosign-local") {  // cosign-local <dir> <witness_dir> <witness_id>: a witness on this machine cosigns the latest tree head (files only, no network)
+    need(5, "<dir> <witness_dir> <witness_id>");
     Log lg(argv[2]); const fs::path wd = argv[3]; const std::string wid = require_witness_id(argv[4]); Packet p; p.log_pub = lg.pub(); p.new_sth = Sth::parse(trim(slurp(lg.d / "sth_latest.txt")));
     const fs::path st = wd / "last_cosigned_sth.txt";
     if (fs::exists(st)) { Sth held = Sth::parse(trim(slurp(st))); p.old_sth = held; p.has_old = true; if (held.tree_size <= p.new_sth.tree_size) p.proof = consistency_proof(lg.L, held.tree_size, p.new_sth.tree_size); }
@@ -204,21 +210,27 @@ int pchie_anchor_main(int argc, char** argv) try {
     std::cout << "cosigned_by=" << wid << " tree_size=" << p.new_sth.tree_size << "\n"; return 0;
   }
   if (cmd == "witness-cosign") {  // witness-cosign <witness_dir> <witness_id> <packet> <out_cosig>
+    need(6, "<witness_dir> <witness_id> <packet> <out_cosig>");
     Packet p = parse_packet(argv[4]); std::string cl; std::string why = witness_cosign(argv[2], require_witness_id(argv[3]), p, &cl);
     if (!why.empty()) { std::cout << "WITNESS REFUSED: " << why << "\n"; return 1; } spit(argv[5], cl + "\n"); std::cout << "cosigned tree_size=" << p.new_sth.tree_size << "\n"; return 0;
   }
   if (cmd == "intake") {  // intake <dir> <witness_id> <cosig_file>: verify a returned countersignature against the registered witness key
+    need(5, "<dir> <witness_id> <cosig_file>");
     Log lg(argv[2]); const std::string wid = require_witness_id(argv[3]); auto reg = kvfile(lg.d / "witness_registry.txt");
     if (!reg.count(wid) || reg[wid] == "UNREGISTERED") { std::cout << "INTAKE FAIL: witness '" << wid << "' has no registered public key (slot open)\n"; return 1; }
-    const std::string l = trim(slurp(argv[4])); const auto p = l.rfind("|sig="); const std::string t = l.substr(0, p); const Bytes sig = unhex(l.substr(p + 5));
-    const auto ts = t.find("|tree_size="); const uint64_t n = std::stoull(t.substr(ts + 11, t.find('|', ts + 1) - ts - 11)); Sth s = lg.sth(n);
+    const std::string l = trim(slurp(argv[4])); const auto p = l.rfind("|sig=");
+    if (p == std::string::npos) { std::cout << "INTAKE FAIL: malformed cosignature (no signature field)\n"; return 1; }
+    const std::string t = l.substr(0, p); const Bytes sig = unhex(l.substr(p + 5));
+    const auto ts = t.find("|tree_size="); if (ts == std::string::npos) { std::cout << "INTAKE FAIL: malformed cosignature (no tree size)\n"; return 1; }
+    const uint64_t n = std::stoull(t.substr(ts + 11, t.find('|', ts + 1) - ts - 11)); Sth s = lg.sth(n);
     if (t != cosig_text(wid, s)) { std::cout << "INTAKE FAIL: cosignature does not match our STH at size " << n << "\n"; return 1; }
     if (!hbs_verify(unhex(reg[wid]), Bytes(t.begin(), t.end()), sig)) { std::cout << "INTAKE FAIL: bad signature\n"; return 1; }
     spit(lg.d / "cosigs" / (std::to_string(n) + "_" + wid + ".txt"), l + "\n"); spit(lg.d / "witness_held" / (wid + ".txt"), s.line() + "\n"); std::cout << "INTAKE PASS: " << wid << " cosigned tree_size=" << n << "\n"; return 0;
   }
-  if (cmd == "prove-inclusion") { Log lg(argv[2]); size_t i = std::stoul(argv[3]), n = argc > 4 ? std::stoul(argv[4]) : lg.L.size(); for (auto& h : inclusion_proof(lg.L, i, n)) std::cout << hex(h) << "\n"; return 0; }
-  if (cmd == "prove-consistency") { Log lg(argv[2]); for (auto& h : consistency_proof(lg.L, std::stoul(argv[3]), std::stoul(argv[4]))) std::cout << hex(h) << "\n"; return 0; }
+  if (cmd == "prove-inclusion") { need(4, "<dir> <index> [tree_size]"); Log lg(argv[2]); size_t i = std::stoul(argv[3]), n = argc > 4 ? std::stoul(argv[4]) : lg.L.size(); for (auto& h : inclusion_proof(lg.L, i, n)) std::cout << hex(h) << "\n"; return 0; }
+  if (cmd == "prove-consistency") { need(5, "<dir> <old_size> <new_size>"); Log lg(argv[2]); for (auto& h : consistency_proof(lg.L, std::stoul(argv[3]), std::stoul(argv[4]))) std::cout << hex(h) << "\n"; return 0; }
   if (cmd == "verify") {  // verify <dir> --anchor-index i [--chain-file F [--rule v1|v2] [--genesis-salt-file S]] [--policy P] [--fingerprint "..."] [--witness-held STHFILE] [--witness-pub HEX --witness-id ID]
+    need(3, "<dir> --anchor-index i [options]");
     Log lg(argv[2]); const size_t i = std::stoul(arg(argc, argv, "--anchor-index")); int fails = 0;
     auto R = [&](const std::string& name, bool ok, const std::string& det) { std::cout << (ok ? "PASS " : "FAIL ") << name << "  " << det << "\n"; if (!ok) ++fails; };
     if (i >= lg.recs.size()) { R("anchor_present", false, "index out of range"); return 1; }
@@ -232,7 +244,7 @@ int pchie_anchor_main(int argc, char** argv) try {
       R("consistency_vs_witness", ok, "witness-held size=" + std::to_string(h.tree_size) + " -> log size=" + std::to_string(s.tree_size)); }
     const std::string wp = arg(argc, argv, "--witness-pub"), wid = arg(argc, argv, "--witness-id");
     if (!wp.empty()) { require_witness_id(wid); }
-    if (!wp.empty()) { fs::path c = lg.d / "cosigs" / (std::to_string(s.tree_size) + "_" + wid + ".txt"); bool ok = false; if (fs::exists(c)) { std::string l = trim(slurp(c)); auto p = l.rfind("|sig="); std::string t = l.substr(0, p); ok = t == cosig_text(wid, s) && hbs_verify(unhex(wp), Bytes(t.begin(), t.end()), unhex(l.substr(p + 5))); } R("witness_cosig", ok, wid + " on tree_size=" + std::to_string(s.tree_size)); }
+    if (!wp.empty()) { fs::path c = lg.d / "cosigs" / (std::to_string(s.tree_size) + "_" + wid + ".txt"); bool ok = false; if (fs::exists(c)) { std::string l = trim(slurp(c)); auto p = l.rfind("|sig="); if (p != std::string::npos) { std::string t = l.substr(0, p); ok = t == cosig_text(wid, s) && hbs_verify(unhex(wp), Bytes(t.begin(), t.end()), unhex(l.substr(p + 5))); } } R("witness_cosig", ok, wid + " on tree_size=" + std::to_string(s.tree_size)); }
     const std::string pol = arg(argc, argv, "--policy");
     if (!pol.empty()) { WitnessPolicy P = load_policy(pol); std::string det; R("witness_policy", check_policy(lg, s, P, det), det); }
     const std::string cf = arg(argc, argv, "--chain-file");
