@@ -6,7 +6,7 @@
 //
 //   pchie_rl_l1l2_test.exe --unit                     no model: fidelity, poison control, L2, sealed-tuple, guards
 //   pchie_rl_l1l2_test.exe --bench                    forward timing on Little Nemo (CPU)
-//   pchie_rl_l1l2_test.exe --maze b1|stagea|stageb [--rl-...] [--poison] [--steps N] [--budget N] [--label X] [--b1-seed N]
+//   pchie_rl_l1l2_test.exe --maze b1|stagea|stageb [--rl-...] [--poison] [--steps N] [--budget N] [--label X] [--b1-seed N] [--stagea-seed N]
 //                          [--root DIR] [--workers N (default: all threads)] [--mem DIR/scratch/rl/mem/F.jsonl] [--loop-guard on|off] [--tesla on|off] [--tesla-seed os|dev-insecure] [--attest on|off]
 //                                                     loop guard v2 is on by default; off gives the old default walk
 //                                                     one decide-only run; prints an [RLON] token line
@@ -750,6 +750,7 @@ static int maze_run(int argc, char** argv) {
   bool poison = false;
   int steps = 0, ctx = 256, budget = 16;
   uint64_t b1_seed = 1;  // --b1-seed N: another B1 maze (scratch comparisons; default 1 is the B1 of record)
+  uint64_t stagea_seed = ScaledPitMaze::kLabeledSeed;  // --stagea-seed N: another Stage A maze (default 64 is the labeled Stage A)
   std::string mempath;
   bool loop_guard = true;  // loop guard v2, the default since 2026-11-13
   StreamAuthFlags stream_auth;  // TESLA + attestation on by default
@@ -758,6 +759,7 @@ static int maze_run(int argc, char** argv) {
     if (a == "--maze" && i + 1 < argc) maze = argv[++i];
     else if (a == "--poison") poison = true;
     else if (a == "--b1-seed" && i + 1 < argc) b1_seed = std::strtoull(argv[++i], nullptr, 10);
+    else if (a == "--stagea-seed" && i + 1 < argc) stagea_seed = std::strtoull(argv[++i], nullptr, 10);
     else if (a == "--steps" && i + 1 < argc) steps = std::atoi(argv[++i]);
     else if (a == "--ctx" && i + 1 < argc) ctx = std::atoi(argv[++i]);
     else if (a == "--budget" && i + 1 < argc) budget = std::atoi(argv[++i]);
@@ -821,6 +823,7 @@ static int maze_run(int argc, char** argv) {
   }
   const bool eng = r.engaged();
   if (b1_seed != 1) std::printf("[RLON] b1_seed=%llu (scratch comparison maze)\n", (unsigned long long)b1_seed);
+  if (stagea_seed != ScaledPitMaze::kLabeledSeed) std::printf("[RLON] stagea_seed=%llu (scratch comparison maze)\n", (unsigned long long)stagea_seed);
   std::printf("[RLON] start maze=%s label=%s engaged=%d flags={%s} poison=%d steps=%d budget=%d ctx=%d loop_guard=%s tesla=%s attest=%s\n", maze.c_str(), label.c_str(),
               int(eng), pr.flags.identity_line().c_str(), int(poison), steps, budget, ctx, loop_guard ? "on" : "off",
               stream_auth.tesla ? "on" : "off", stream_auth.attest ? "on" : "off");
@@ -830,7 +833,16 @@ static int maze_run(int argc, char** argv) {
   std::string extra;
   if (maze == "b1" || maze == "stagea") {
     const bool a = maze == "stagea";
-    const MazeGrid grid = a ? ScaledPitMaze::make() : MazeGrid(b1_seed, 16, 16);
+    const MazeGrid grid = a ? ScaledPitMaze::make(stagea_seed) : MazeGrid(b1_seed, 16, 16);
+    {
+      // Layout hash: many B1 seeds fall back to the same corner layout, so two seeds are only
+      // two different mazes when this line differs. Printed only; never fed to the tree.
+      std::vector<uint8_t> cells;
+      for (int y = 0; y < grid.height(); ++y)
+        for (int x = 0; x < grid.width(); ++x) cells.push_back(uint8_t(grid.cell(x, y)));
+      std::printf("[RLON] layout maze=%s w=%d h=%d sha256=%s\n", maze.c_str(), grid.width(), grid.height(),
+                  hexv(Sha256::hash(cells.data(), cells.size())).c_str());
+    }
     HeadlessMaze mz(grid);
     mz.set_search_budget(budget);
     mz.enable_loop_guard(loop_guard);
