@@ -420,3 +420,23 @@ get_property(_pchie_all_tests DIRECTORY PROPERTY TESTS)
 foreach(_t IN LISTS _pchie_all_tests)
   set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "PCHIE_NEML_DIR=${CMAKE_CURRENT_BINARY_DIR}/neml-test")
 endforeach()
+
+# Ternary weights (opt-in, clean-room; see docs/ternary/README.md). A separate library with its own flags and no
+# architecture flag, so its scalar path runs on any x86-64 or AArch64 CPU; SIMD kernels are picked at run time.
+# Nothing in pchie_core links it, so the existing paths and their hashes are untouched.
+add_library(pchie_ternary STATIC src/pchie_ternary.cpp src/pchie_ternary_simd.cpp)
+target_include_directories(pchie_ternary PUBLIC include)
+if(MSVC)
+  target_compile_options(pchie_ternary PRIVATE /fp:precise /W4)
+else()
+  target_compile_options(pchie_ternary PRIVATE -ffp-contract=off -fno-fast-math -Wall -Wextra)
+endif()
+add_executable(pchie_ternary_test tests/pchie_ternary_test.cpp)
+target_link_libraries(pchie_ternary_test PRIVATE pchie_ternary Threads::Threads)
+add_test(NAME pchie_ternary COMMAND pchie_ternary_test)
+if(PCHIE_FUZZ)
+  add_executable(pchie_ternary_fuzz fuzz/pchie_ternary_fuzz.cpp)
+  target_link_libraries(pchie_ternary_fuzz PRIVATE pchie_ternary)
+  add_test(NAME pchie_ternary_fuzz_smoke COMMAND pchie_ternary_fuzz 200000 1)
+  set_tests_properties(pchie_ternary_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 900)
+endif()
