@@ -27,3 +27,29 @@ Each line carries the previous line's hash (the research `SideLog` format), so
 1/2/4/8/12 workers.
 
 Tests: `pchie_harness_test --unit` (CTest `pchie_harness`).
+
+## One plug for many games (`pchie/harness/GamePlug.h`)
+
+After the BALROG pattern, every game speaks the same interface: `reset(seed)`, `step(action)` with a text
+observation (plus an optional glyph picture and, for the mazes, Little Nemo's own senses), a fixed action
+list, integer rewards, and a SHA-256 state digest for replay checks. Agents plug into the other side through
+`IAgentPlug`. **This is the socket Mjolnir plugs into later:** an adapter is just another agent.
+
+Grading stays outside the agent. `grade()` reads the world after the episode (success, distance closed or
+achievements), and nothing from it is passed to `act()`; a test checks that no observation carries it.
+
+| Plug | What it is |
+|---|---|
+| `lithokraft.maze.b1` | The headless B1 maze, any seed. He is told his odometry, facing, what is at his feet and next to him, and which ways are open. Graded by BFS distance closed. |
+| `lithokraft.maze.stagea` | The 64x64 Stage A pit maze, any seed (default 64). Falling ends the episode. Graded by the pit-avoiding distance. |
+| `litholattice.testbed.stub` | **Stub.** A seeded corridor so the socket is exercised end to end. The real LithoLattice testbeds will answer through the engine's MCP seam. |
+| `craftax_like.grid` | A small Craftax-style crafting grid (9x9, 5x5 view): collect wood, place a table, make a wooden pickaxe, mine stone. |
+
+Agents: `go_explore_agent()` (research L7 on his own senses) and `cycle_agent(...)` for smoke runs.
+`game_task(plug, seeds, budget, agent)` turns episodes into a harness task, so games get the same transcripts,
+side chain and thread-count identity as any other task. The scorer gives full marks for success and otherwise
+half marks scaled by graded progress.
+
+Note on B1 seeds: most seeds fail the generator's key-and-door check and fall back to the same corner layout
+(seeds 2 and 3 are the same maze). The maze plug grades with a layout hash, and the maze runner prints one, so
+a comparison can prove its seeds are different mazes.

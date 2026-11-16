@@ -16,6 +16,7 @@ int main(int argc, char** argv) {
   }
   const auto t0 = std::chrono::steady_clock::now();
   harness_test::test_task_eval(dir.c_str());
+  harness_test::test_plugs(dir.c_str());
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   std::printf("harness: %d passed, %d failed (%.0f ms)\n", harness_test::passes(), harness_test::failures(), ms);
   return harness_test::failures() ? 1 : 0;

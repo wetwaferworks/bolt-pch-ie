@@ -266,12 +266,13 @@ add_test(NAME pchie_research COMMAND pchie_research_test --unit)
 add_executable(pchie_research_tool tools/pchie_research_tool.cpp)
 target_link_libraries(pchie_research_tool PRIVATE pchie_research)
 
-# Harness (scratch research, off the official path): Inspect-style tasks, solvers, scorers and transcripts.
+# Harness (scratch research, off the official path): Inspect-style tasks, solvers, scorers and transcripts,
+# and one plug interface for many games (BALROG-style).
 # Its own library; pchie_core and every existing hash are unchanged. No model, about a second.
 add_library(pchie_harness STATIC
-  src/harness/Transcript.cpp src/harness/Task.cpp src/harness/Eval.cpp)
+  src/harness/Transcript.cpp src/harness/Task.cpp src/harness/Eval.cpp src/harness/GamePlug.cpp src/harness/Plugs.cpp)
 target_link_libraries(pchie_harness PUBLIC pchie_research)
-add_executable(pchie_harness_test tests/harness/pchie_harness_test.cpp tests/harness/task_eval_test.cpp)
+add_executable(pchie_harness_test tests/harness/pchie_harness_test.cpp tests/harness/task_eval_test.cpp tests/harness/plugs_test.cpp)
 target_link_libraries(pchie_harness_test PRIVATE pchie_harness)
 add_test(NAME pchie_harness COMMAND pchie_harness_test --unit --dir ${CMAKE_CURRENT_BINARY_DIR})
 
