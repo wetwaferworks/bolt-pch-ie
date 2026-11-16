@@ -50,6 +50,7 @@ RobotPose pose_at_tick(const VariationTree& t, uint32_t fork_id, uint64_t tick, 
     if (nxt == INVALID_ID || n != c) return a;
     const RobotPose b = pose_from_lineage(t, nxt, w);
     const int64_t span = int64_t(t.nodes[nxt].handshake_tick - t.nodes[c].handshake_tick);
+    if (span <= 0) return a;    // malformed or duplicate ticks: stay at the last safe pose
     const int64_t f = int64_t(tick - t.nodes[c].handshake_tick);
     auto lerp = [&](int32_t u, int32_t v) { return int32_t(u + (int64_t(v - u) * f) / span); };
     return {lerp(a.x, b.x), lerp(a.y, b.y), lerp(a.z, b.z), f * 2 < span ? a.yaw : b.yaw};
@@ -66,11 +67,19 @@ uint32_t HostSession::generate() {
     const TokenRecord& p = tree.nodes[tree.cursor_node_id];
     if (tree.step_forward() != INVALID_ID) throw std::logic_error("generate() off branch tip");
     auto table = kv.clone_block_table(p.kv_block_table);
+    // The cloned table owns refs even if prepare_write_slot or the token source throws. Transfer them to
+    // the new node only after append succeeds; every earlier exit releases the clone.
+    struct TableGuard {
+        PagedKVCache& kv; std::vector<uint32_t>& table; bool transferred = false;
+        ~TableGuard() { if (!transferred) kv.release_block_table(table); }
+    } guard{kv, table};
     kv.prepare_write_slot(table, p.seq_pos + 1);
     const GenOut g = src_(p, tree.active_fork_id);
     clock.seek(p.handshake_tick);
     const uint64_t tick = clock.commit_token();
-    return tree.append_generated_token(tick, g.token, g.next_seed, g.logit_digest, table);
+    const uint32_t id = tree.append_generated_token(tick, g.token, g.next_seed, g.logit_digest, table);
+    guard.transferred = true;
+    return id;
 }
 
 uint32_t HostSession::scrub_forward() noexcept {

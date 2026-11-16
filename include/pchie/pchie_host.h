@@ -5,6 +5,7 @@
 #include "pchie/pchie_kv_cow.h"
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <vector>
 
 namespace pchie {
@@ -14,7 +15,7 @@ namespace pchie {
 class TimingHandshake {
 public:
     explicit TimingHandshake(uint64_t start_tick, uint32_t ticks_per_token)
-        : tick_(start_tick), k_(ticks_per_token) {}
+        : tick_(start_tick), k_(ticks_per_token) { if (k_ == 0) throw std::invalid_argument("ticks_per_token must be greater than zero"); }
     uint64_t now() const noexcept { return tick_; }
     uint32_t ticks_per_token() const noexcept { return k_; }
     uint64_t commit_token() noexcept { tick_ += k_; return tick_; }

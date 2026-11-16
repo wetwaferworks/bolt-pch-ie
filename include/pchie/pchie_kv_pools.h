@@ -53,6 +53,8 @@ private:
     int32_t alloc();
     void    ensure_private(Table& t, uint32_t pos);
     size_t  offset(uint32_t layer, uint32_t slot, bool v) const noexcept;
+    int32_t checked_page(const Table& t, uint32_t layer, uint32_t pos) const;
+    void checked_ref(int32_t p) const;
     uint32_t layers_, heads_, dim_, max_pages_;
     size_t page_floats_;
     std::vector<float>    arena_;
