@@ -266,6 +266,15 @@ add_test(NAME pchie_research COMMAND pchie_research_test --unit)
 add_executable(pchie_research_tool tools/pchie_research_tool.cpp)
 target_link_libraries(pchie_research_tool PRIVATE pchie_research)
 
+# Harness (scratch research, off the official path): Inspect-style tasks, solvers, scorers and transcripts.
+# Its own library; pchie_core and every existing hash are unchanged. No model, about a second.
+add_library(pchie_harness STATIC
+  src/harness/Transcript.cpp src/harness/Task.cpp src/harness/Eval.cpp)
+target_link_libraries(pchie_harness PUBLIC pchie_research)
+add_executable(pchie_harness_test tests/harness/pchie_harness_test.cpp tests/harness/task_eval_test.cpp)
+target_link_libraries(pchie_harness_test PRIVATE pchie_harness)
+add_test(NAME pchie_harness COMMAND pchie_harness_test --unit --dir ${CMAKE_CURRENT_BINARY_DIR})
+
 # L1/L2/sealed-tuple flags-on ablations (decide path only, CPU).
 add_executable(pchie_rl_l1l2_test tests/rl/pchie_rl_l1l2_test.cpp)
 target_link_libraries(pchie_rl_l1l2_test PRIVATE pchie_core pchie_research)  # research: --research-* on maze runs only

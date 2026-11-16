@@ -10,6 +10,7 @@ All notable changes to Bolt PCHIE are listed here, newest first.
 - **Research layers in the maze runs.** `pchie_rl_l1l2_test --maze b1|stagea` takes Go-Explore, the look-ahead (with a pinned frozen model), the step scorer and Reflexion through `--research-*` flags. They can only move or lower prior shares on legal edges, and they write their own side chain. Without research flags the runs and every hash are unchanged. New `pchie_research_tool` (freeze a model from side logs, verify a side chain).
 - **Tree of Thoughts and the constraint peer in the maze runs.** `--research-tree-of-thoughts` and `--research-smt` now reach the B1 and Stage A decide loop. Both plan only on Little Nemo's own map and what he saw next to him. The door/key plan can be checked by a pinned Z3 (`--research-smt-sha`), and any disagreement stops the run. Results are the same at every thread count.
 - **ASCII views for the context comparison.** `pchie_lk_visnav --obs ascii[=1024|2048]` adds verified Nemo View pictures (`vision.capture_ascii`) to the live view, with their own side chain. Off by default.
+- **Harness: tasks, solvers, scorers and transcripts.** A new `pchie_harness` library runs tasks the Inspect AI way, rebuilt in C++: samples, a solver, a scorer, integer scores, and a transcript per sample written onto its own side chain in sample order. Results and the chain head are the same at every thread count. Off the official path. See [experiments/harness.md](experiments/harness.md).
 
 ### Security
 
