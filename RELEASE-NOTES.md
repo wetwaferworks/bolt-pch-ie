@@ -1,6 +1,6 @@
 # Release notes
 
-## 0.1.1
+## 0.1.2
 
 This release is a security hardening pass. It comes from our first security review, by Gizmo (ChatGPT Luna 6), and a second hardening review by Helia (Google Hydrogen), cross-checked by Luna (ChatGPT Luna 6). Every finding was checked against the code and fixed, and each fix has its own tests. No official or neutrality hash moved: the maze H_world, the B1 actions and the gauntlet H_bolt are the same as before.
 

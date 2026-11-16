@@ -2,7 +2,7 @@
 
 All notable changes to Bolt PCHIE are listed here, newest first.
 
-## 0.1.1
+## 0.1.2
 
 ### Added
 
