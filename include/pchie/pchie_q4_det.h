@@ -30,7 +30,12 @@ struct BlockQ8_0 {
     int8_t qs[Q_BLOCK_SIZE];
 };
 
+// NaN gives 0 and values outside the int32 range saturate (the cast would be undefined); same results as
+// before for every value inside the range.
 inline int32_t round_half_even_f32(float x) noexcept {
+    if (!(x == x)) return 0;
+    if (x >= 2147483648.0f) return 2147483647;
+    if (x < -2147483648.0f) return -2147483647 - 1;
     const float fl = std::floor(x);           // exact
     const float diff = x - fl;                // exact for |x| < 2^23
     int32_t r = static_cast<int32_t>(fl);

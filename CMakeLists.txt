@@ -241,6 +241,11 @@ add_executable(pchie_cuda_limits_test tests/pchie_cuda_limits_test.cpp)
 target_link_libraries(pchie_cuda_limits_test PRIVATE pchie_core)
 add_test(NAME pchie_cuda_limits COMMAND pchie_cuda_limits_test)
 
+# Deterministic exp and rounding on NaN, inf and out-of-range input (and bit-identical results otherwise).
+add_executable(pchie_det_math_test tests/pchie_det_math_test.cpp)
+target_link_libraries(pchie_det_math_test PRIVATE pchie_core)
+add_test(NAME pchie_det_math COMMAND pchie_det_math_test)
+
 # Join-order invariant: deterministic fold by stable work id, plus a shuffle-arrival test.
 add_executable(pchie_join_order_test tests/pchie_join_order_test.cpp)
 target_link_libraries(pchie_join_order_test PRIVATE pchie_core)

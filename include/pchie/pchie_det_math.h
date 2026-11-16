@@ -49,8 +49,13 @@ PCHIE_HD float det_fp16_to_f32(uint16_t h) {
 }
 PCHIE_HD float det_bf16_to_f32(uint16_t h) { return det_f32_from_bits(static_cast<uint32_t>(h) << 16); }
 
-// Same results as round_half_even_f32() in pchie_q4_det.h.
+// Same results as round_half_even_f32() in pchie_q4_det.h. NaN gives 0 and values outside the int32 range
+// saturate, so the float-to-int cast is always defined and the CPU and GPU agree (both are undefined or
+// differ between x86 and CUDA otherwise). Every value inside the range gives the same result as before.
 PCHIE_HD int32_t det_round_half_even(float x) {
+    if (!(x == x)) return 0;
+    if (x >= 2147483648.0f) return 2147483647;
+    if (x < -2147483648.0f) return -2147483647 - 1;
     const float fl = floorf(x);
     const float diff = x - fl;
     int32_t r = static_cast<int32_t>(fl);
@@ -79,6 +84,7 @@ PCHIE_HD float gelu_tanh_deterministic(float z) {
 // exp() from + - * / only: x = k ln2 + r, |r| <= ln2/2, degree-6 Taylor, scale by 2^k
 // through the exponent bits. Relative error < 2e-7 on [-87, 88]; 0 below -87.
 PCHIE_HD float exp_deterministic(float x) {
+    if (!(x == x)) return x;                       // NaN in, NaN out (never cast to int)
     if (x < -87.0f) return 0.0f;
     if (x > 88.0f) x = 88.0f;
     const int32_t k = det_round_half_even(x * 1.44269504f);
