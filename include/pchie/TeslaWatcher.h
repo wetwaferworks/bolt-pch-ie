@@ -9,7 +9,9 @@
 // Untrusted input is bounded: a step or disclosure whose index is past the limits, or a stream with more
 // packets than the limits allow, stops the watcher with a flag (no large allocation, no long hash walk).
 // A step index that arrives twice is flagged and rejected from that index on, so all_verified is never true
-// for a stream with duplicates.
+// for a stream with duplicates. The gap report keeps a count plus the first kMaxGapIndices indices, and a
+// stream's step space is capped at kMaxSteps whatever I the header claims, so a three-line stream cannot make
+// the watcher allocate gigabytes.
 #pragma once
 #include <algorithm>
 #include <cstdint>
@@ -71,7 +73,8 @@ struct TeslaWatchResult {
   bool all_verified = false;      // authentic, no flags that reject a step, no gaps, every step 0..last released
   uint64_t failed_at = ~uint64_t(0);  // first step index that must not be released; ~0 if none
   std::vector<TeslaReleasedStep> released;
-  std::vector<uint64_t> gaps;
+  std::vector<uint64_t> gaps;     // the first kMaxGapIndices missing indices (the report stays bounded)
+  uint64_t gap_count = 0;         // every missing index, including those past the stored list
   std::vector<TeslaFlagEvent> flags;
 };
 
@@ -82,7 +85,9 @@ class TeslaWatcher {
     sch_.check();
     if (commitment_.size() != Sha256::kDigestBytes) throw std::invalid_argument("TESLA watcher: commitment must be 32 bytes");
     if (lim_.max_intervals == 0 || lim_.max_intervals > (1u << 20)) throw std::invalid_argument("TESLA watcher: max_intervals out of range");
-    max_steps_ = uint64_t(lim_.max_intervals) * sch_.I;
+    // The step space is capped whatever I and max_intervals say (I comes from the stream header): seen_ is
+    // one byte per step, so 2^24 steps is at most 16 MB, still 512 times an honest 4096 x 8 stream.
+    max_steps_ = std::min<uint64_t>(uint64_t(lim_.max_intervals) * sch_.I, kMaxSteps);
     if (lim_.max_packets == 0) lim_.max_packets = max_steps_ + 2ull * lim_.max_intervals + 64;
   }
 
@@ -176,13 +181,14 @@ class TeslaWatcher {
           // An index before failed_at that was never released is a gap. Indices at or after failed_at were
           // already rejected (the stream failed there), so they are not reported again as gaps.
           if (s < result_.failed_at) {
-            result_.gaps.push_back(s);
+            if (result_.gaps.size() < kMaxGapIndices) result_.gaps.push_back(s);
+            ++result_.gap_count;
             flag(TeslaFlag::Gap, s, uint32_t(s / sch_.I));
           }
         }
       }
     }
-    result_.all_verified = result_.authentic && result_.gaps.empty() && result_.failed_at == ~uint64_t(0) &&
+    result_.all_verified = result_.authentic && result_.gap_count == 0 && result_.gaps.empty() && result_.failed_at == ~uint64_t(0) &&
                            !result_.released.empty();
     // Any flag fails the stream as a whole, early disclosure included: an early key is an attack, even
     // though packets buffered before it may still verify and be released. A stopped watch never passes.
@@ -301,6 +307,12 @@ class TeslaWatcher {
 
  private:
   static constexpr size_t kMaxFlags = 1024;
+
+ public:
+  static constexpr size_t kMaxGapIndices = 1024;
+  static constexpr uint64_t kMaxSteps = 1ull << 24;
+
+ private:
   std::vector<uint8_t> commitment_;
   TeslaSchedule sch_;
   TeslaWatchLimits lim_;

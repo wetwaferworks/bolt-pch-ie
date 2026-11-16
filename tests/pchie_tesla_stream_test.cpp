@@ -421,6 +421,14 @@ int main(int argc, char** argv) {
     const int garbage_rc = run_watcher_cli(watcher_exe, "tesla_watch_garbage.txt");
     const int badhdr_rc = run_watcher_cli(watcher_exe, "tesla_watch_badhdr.txt");
     const int long_rc = run_watcher_cli(watcher_exe, "tesla_watch_longline.txt");
+    {   // Helia's three-line stream (I = 65536, one step far out) through the program: a quick, bounded verdict.
+      TeslaStepPacket far_step = honest40.steps[0];
+      far_step.step_index = 268435455ull; far_step.interval_index = uint32_t(far_step.step_index / TeslaSchedule::kMaxI);
+      write_text("tesla_watch_far.txt", "pchie.tesla.v1.stream\ncommitment=" + tesla_hex(honest40.commitment) + "\nI=65536\nd=2\n" + tesla_step_line(far_step) + "\n");
+      const int far_rc = run_watcher_cli(watcher_exe, "tesla_watch_far.txt");
+      check(far_rc == 1, "watcher program: a far step at I = 65536 is refused quickly with exit 1 (no huge allocation)");
+      std::remove("tesla_watch_far.txt");
+    }
     check(garbage_rc == 2 && badhdr_rc == 2 && long_rc == 2,
           "watcher program: malformed line, oversized header value and overlong line exit 2 without a crash");
     std::remove("tesla_watch_garbage.txt");
@@ -624,6 +632,32 @@ int main(int argc, char** argv) {
     bool threw = false;
     try { TeslaSchedule bad; bad.I = TeslaSchedule::kMaxI + 1; TeslaWatcher w3(honest40.commitment, bad); } catch (const std::invalid_argument&) { threw = true; }
     check(threw, "watcher: a schedule with an oversized interval length is refused");
+  }
+  {
+    // Helia's report: one step at a high index made finish() push one gap per missing index (gigabytes from
+    // a three-line stream). The gap report is now a count plus the first kMaxGapIndices indices.
+    TeslaSchedule big_i; big_i.I = TeslaSchedule::kMaxI; big_i.d = 2;   // I comes from the untrusted header
+    const uint64_t n = TeslaWatcher::kMaxSteps - 1;                    // the highest step index still in range
+    TeslaWatcher w(honest40.commitment, big_i);
+    TeslaStepPacket p = honest40.steps[0];
+    p.step_index = n; p.interval_index = uint32_t(n / big_i.I);
+    w.accept_step(p);
+    const TeslaWatchResult r = w.finish();
+    check(r.gap_count == n + 1 && r.gaps.size() == TeslaWatcher::kMaxGapIndices && r.gaps.front() == 0 && !r.all_verified,
+          "watcher: all 16.7M unreleased steps are counted, only the first 1024 are listed (bounded gap report)");
+    check(r.flags.size() <= 1024 && has_flag(r, TeslaFlag::Gap), "watcher: the gap flags stay bounded too");
+  }
+  {
+    // I = 65536 with the default 4096 intervals once allowed 268M steps, so a single step line resized the
+    // seen set to 256 MB before any gap was counted. The step space is now capped at kMaxSteps.
+    TeslaSchedule big_i; big_i.I = TeslaSchedule::kMaxI; big_i.d = 2;
+    TeslaWatcher w(honest40.commitment, big_i);
+    TeslaStepPacket p = honest40.steps[0];
+    p.step_index = 268435455ull; p.interval_index = uint32_t(p.step_index / big_i.I);
+    w.accept_step(p);
+    const TeslaWatchResult r = w.finish();
+    check(has_flag(r, TeslaFlag::OutOfRange) && r.gaps.empty() && r.gap_count == 0 && !r.all_verified,
+          "watcher: Helia's step 268435455 at I = 65536 is out of range (no 2.4 GB of seen set and gaps)");
   }
   {
     // Full length: the sender's default chain (4096 intervals, 32768 steps). Each disclosure is checked

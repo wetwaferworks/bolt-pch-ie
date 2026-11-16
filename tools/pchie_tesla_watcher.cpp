@@ -81,7 +81,7 @@ static int run(int argc, char** argv) {
   std::printf("TESLA watcher\n");
   std::printf("commitment=%s\n", commitment_hex.substr(11).c_str());
   std::printf("I=%u d=%u\n", sch.I, sch.d);
-  std::printf("released=%zu gaps=%zu flags=%zu failed_at=%s\n", r.released.size(), r.gaps.size(), r.flags.size(),
+  std::printf("released=%zu gaps=%llu flags=%zu failed_at=%s\n", r.released.size(), (unsigned long long)r.gap_count, r.flags.size(),
               r.failed_at == ~uint64_t(0) ? "none" : std::to_string(r.failed_at).c_str());
   for (const auto& f : r.flags) {
     std::printf("  flag %s step=%llu interval=%u\n", tesla_flag_name(f.flag),
