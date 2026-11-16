@@ -13,6 +13,8 @@
 #include "pchie/pchie_gguf.h"
 
 #include <algorithm>
+#include <fstream>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -294,6 +296,28 @@ int main() {
       check(m1.head != plain.head && m1.res.neml_snapshot_sha == snap.sha256, "provenance: the snapshot hash is in the run's chain");
       check(m3.actions == plain.actions && m3.res.neml_memory_nudges == 0, "memory prior: memory of another maze changes nothing here");
     }
+  }
+  // ---- cross-process ledger lock: stale takeover, fresh locks are left alone, busy snapshots ----
+  {
+    neml::Config c = cfg_in("lock");
+    fs::create_directories(c.dir);
+    const fs::path ld = fs::path(c.dir) / "nemo_episodic.lock.d";
+    auto put_owner = [&](const std::string& tok) { fs::create_directories(ld); std::ofstream(ld / "owner", std::ios::binary) << tok; };
+    auto owner = [&]() { std::ifstream f(ld / "owner", std::ios::binary); std::string t; std::getline(f, t); return t; };
+    put_owner("stale-owner");
+    std::error_code ec;
+    fs::last_write_time(ld, fs::file_time_type::clock::now() - std::chrono::minutes(5), ec);
+    bool took = false, replaced = false;
+    { neml::WriteLock lk(c.dir); took = lk.held(); replaced = owner() != "stale-owner" && !owner().empty(); }
+    check(!ec && took && replaced && !fs::exists(ld), "lock: a stale lock is taken over and released with a new owner token");
+    put_owner("fresh-owner");
+    { std::ofstream(neml::ring_path(c), std::ios::binary) << "x"; }
+    const neml::Snapshot busy = neml::Snapshot::take(c);
+    check(busy.busy && !busy.ok && busy.runs.empty() && owner() == "fresh-owner", "lock: a fresh foreign lock is never stolen, and take() reports busy");
+    fs::remove_all(ld, ec);
+    { neml::WriteLock lk(c.dir); if (lk.held()) { fs::remove_all(ld, ec); put_owner("someone-else"); } }
+    check(owner() == "someone-else", "lock: a holder never deletes a lock that now carries another owner token");
+    fs::remove_all(fs::path(c.dir), ec);
   }
   std::printf("[NEML] %s (%d failures)\n", g_fail ? "FAIL" : "PASS", g_fail);
   return g_fail ? 1 : 0;

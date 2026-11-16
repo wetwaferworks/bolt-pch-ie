@@ -10,9 +10,11 @@
 //   (Windows: %LOCALAPPDATA%\BoltPCHIE\neml; elsewhere: $XDG_DATA_HOME/bolt-pchie/neml or ~/.local/share/bolt-pchie/neml).
 // The ledger is never written inside the repository.
 #pragma once
+#include "pchie/OsRandom.h"
 #include "pchie/neml/NemlLedger.h"
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -122,26 +124,80 @@ inline bool write_file_atomic(const std::string& p, const std::vector<uint8_t>& 
   return !ec;
 }
 
-// Serializes ledger writers: one mutex in the process, and a lock file across processes (stale after 60 s).
+// Serializes ledger writers: one mutex in the process, and a lock directory across processes. The directory
+// holds an owner token. A lock older than 60 s is taken over by renaming it aside (only one process can win
+// that rename) and checking the token it carried is the one judged stale; a fresh lock that slipped in is put
+// back. A holder only removes the lock if it still carries its own token.
 class WriteLock {
  public:
   explicit WriteLock(const std::string& dir) : lk_(mu()) {
     namespace fs = std::filesystem;
     path_ = (fs::path(dir) / "nemo_episodic.lock").string();
+    token_ = make_token();
+    const std::string d = path_ + ".d";
     for (int i = 0; i < 400 && !held_; ++i) {
       std::error_code ec;
-      if (fs::create_directory(path_ + ".d", ec)) { held_ = true; break; }
-      const auto t = fs::last_write_time(path_ + ".d", ec);
-      if (!ec && fs::file_time_type::clock::now() - t > std::chrono::seconds(60)) fs::remove(path_ + ".d", ec);
+      if (fs::create_directory(d, ec)) {
+        if (write_token(d, token_)) { held_ = true; break; }
+        fs::remove_all(d, ec);
+        continue;
+      }
+      const auto t = fs::last_write_time(d, ec);
+      if (!ec && fs::file_time_type::clock::now() - t > std::chrono::seconds(60)) {
+        const std::string seen = read_token(d);
+        const std::string aside = d + ".stale." + token_;
+        std::error_code rec;
+        fs::rename(d, aside, rec);
+        if (!rec) {
+          const auto ta = fs::last_write_time(aside, rec);
+          const bool still_stale = !rec && fs::file_time_type::clock::now() - ta > std::chrono::seconds(60);
+          if (read_token(aside) == seen && still_stale) fs::remove_all(aside, rec);
+          else { std::error_code bec; fs::rename(aside, d, bec); if (bec) fs::remove_all(aside, bec); }
+        }
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
   }
-  ~WriteLock() { if (held_) { std::error_code ec; std::filesystem::remove(path_ + ".d", ec); } }
+  ~WriteLock() {
+    if (!held_) return;
+    namespace fs = std::filesystem;
+    const std::string d = path_ + ".d", aside = d + ".release." + token_;
+    std::error_code ec;
+    if (read_token(d) != token_) return;  // taken over while we held it; never delete someone else's lock
+    fs::rename(d, aside, ec);
+    if (ec) return;
+    if (read_token(aside) == token_) fs::remove_all(aside, ec);
+    else { std::error_code bec; fs::rename(aside, d, bec); }
+  }
+  WriteLock(const WriteLock&) = delete;
+  WriteLock& operator=(const WriteLock&) = delete;
   bool held() const { return held_; }
  private:
   static std::mutex& mu() { static std::mutex m; return m; }
+  static std::string make_token() {
+    uint8_t r[16] = {};
+    if (!pchie::os_random_bytes(r, sizeof r)) {
+      const uint64_t t = uint64_t(std::chrono::steady_clock::now().time_since_epoch().count());
+      std::memcpy(r, &t, sizeof t);
+    }
+    static const char* hx = "0123456789abcdef";
+    std::string s;
+    for (uint8_t b : r) { s += hx[b >> 4]; s += hx[b & 15]; }
+    return s;
+  }
+  static bool write_token(const std::string& d, const std::string& tok) {
+    std::ofstream f(std::filesystem::path(d) / "owner", std::ios::binary | std::ios::trunc);
+    f << tok;
+    return bool(f);
+  }
+  static std::string read_token(const std::string& d) {
+    std::ifstream f(std::filesystem::path(d) / "owner", std::ios::binary);
+    std::string s;
+    if (f) std::getline(f, s);
+    return s.size() > 64 ? std::string() : s;
+  }
   std::unique_lock<std::mutex> lk_;
-  std::string path_;
+  std::string path_, token_;
   bool held_ = false;
 };
 

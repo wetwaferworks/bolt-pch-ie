@@ -22,6 +22,7 @@ struct Snapshot {
   std::vector<MazeRunReceipt> runs;  // oldest -> newest
   uint32_t lifetime = 0;
   bool ok = true;                 // false: the file was unreadable, and the snapshot is treated as empty
+  bool busy = false;              // true: another writer held the ledger lock, so nothing was read
 
   static Snapshot from_bytes(const std::vector<uint8_t>& b) {
     Snapshot s;
@@ -38,6 +39,7 @@ struct Snapshot {
     std::error_code ec;
     if (!std::filesystem::exists(ring_path(c), ec)) return empty();
     WriteLock lock(dir);
+    if (!lock.held()) { Snapshot s = empty(); s.ok = false; s.busy = true; return s; }
     return from_bytes(read_file(ring_path(c)));
   }
 };
