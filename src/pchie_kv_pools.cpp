@@ -20,6 +20,16 @@ int32_t KVPagePool::alloc() {
     return p;
 }
 
+namespace {
+// Freed pages are pushed during a loop and the free list is sorted once when the loop ends (also on a
+// throw), which leaves exactly the order the old sort-after-every-push gave.
+struct FreeListResort {
+    std::vector<int32_t>& free_list;
+    bool dirty = false;
+    ~FreeListResort() { if (dirty) std::sort(free_list.begin(), free_list.end(), std::greater<int32_t>()); }
+};
+}  // namespace
+
 KVPagePool::Table KVPagePool::fork(const Table& parent) {
     Table t = parent;
     for (int32_t p : t.pages) if (p >= 0) { checked_ref(p); if (refs_[size_t(p)] == UINT32_MAX) throw std::overflow_error("KV ref count overflow"); refs_[size_t(p)]++; }
@@ -27,12 +37,13 @@ KVPagePool::Table KVPagePool::fork(const Table& parent) {
 }
 
 void KVPagePool::release(Table& t) {
+    FreeListResort resort{free_};
     for (int32_t& p : t.pages) {
         if (p < 0) continue;
         checked_ref(p);
         if (--refs_[size_t(p)] == 0) {
             free_.push_back(p);
-            std::sort(free_.begin(), free_.end(), std::greater<int32_t>());
+            resort.dirty = true;
         }
         p = -1;
     }
@@ -40,6 +51,7 @@ void KVPagePool::release(Table& t) {
 }
 
 void KVPagePool::trim_before(Table& t, uint32_t first_needed) {
+    FreeListResort resort{free_};
     const uint32_t last_dead = first_needed / KV_PAGE_TOKENS; // pages < last_dead are fully dead
     for (uint32_t lp = 0; lp < last_dead && lp < t.pages.size(); ++lp) {
         int32_t& p = t.pages[lp];
@@ -47,13 +59,14 @@ void KVPagePool::trim_before(Table& t, uint32_t first_needed) {
         checked_ref(p);
         if (--refs_[size_t(p)] == 0) {
             free_.push_back(p);
-            std::sort(free_.begin(), free_.end(), std::greater<int32_t>());
+            resort.dirty = true;
         }
         p = -1;
     }
 }
 
 void KVPagePool::truncate(Table& t, uint32_t n_tokens) {
+    FreeListResort resort{free_};
     const size_t keep = (size_t(n_tokens) + KV_PAGE_TOKENS - 1) / KV_PAGE_TOKENS;
     for (size_t lp = keep; lp < t.pages.size(); ++lp) {
         int32_t& p = t.pages[lp];
@@ -61,7 +74,7 @@ void KVPagePool::truncate(Table& t, uint32_t n_tokens) {
         checked_ref(p);
         if (--refs_[size_t(p)] == 0) {
             free_.push_back(p);
-            std::sort(free_.begin(), free_.end(), std::greater<int32_t>());
+            resort.dirty = true;
         }
         p = -1;
     }

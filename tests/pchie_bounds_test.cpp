@@ -29,5 +29,14 @@ int main(){
     try{h.generate();}catch(const std::runtime_error&){threw=true;}
     check(threw && h.kv.free_blocks()==before,"throwing token source releases cloned pages");
     check(h.tree.nodes.size()==1 && h.clock.now()==0,"throw leaves tree and clock at parent");
+    {   // freed pages come back lowest id first, whatever order the tables were released in
+        KVPagePool q(1,1,8,8); KVPagePool::Table a,b,c;
+        for(uint32_t pos=0;pos<4*KV_PAGE_TOKENS;pos+=KV_PAGE_TOKENS) q.k_write(a,0,pos);
+        for(uint32_t pos=0;pos<2*KV_PAGE_TOKENS;pos+=KV_PAGE_TOKENS) q.k_write(b,0,pos);
+        q.truncate(a,KV_PAGE_TOKENS); q.release(b); q.trim_before(a,KV_PAGE_TOKENS); q.release(a);
+        bool order=q.live_pages()==0;
+        for(uint32_t i=0;i<6;++i){ q.k_write(c,0,i*KV_PAGE_TOKENS); order=order && q.page_of(c,i*KV_PAGE_TOKENS)==int32_t(i); }
+        check(order,"free list order after truncate, release and trim is lowest id first");
+    }
     std::printf("[BOUNDS] %d PASS / %d FAIL\n",pass,fail); return fail?1:0;
 }
