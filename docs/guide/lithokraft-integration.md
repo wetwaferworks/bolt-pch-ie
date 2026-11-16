@@ -1,14 +1,14 @@
 # LithoKraft and LithoLattice
 
-LithoLattice is the engine. LithoKraft is the game that runs on it. The names are one word each, with both Ls capital in LithoLattice and a K in LithoKraft. PCHIE talks to a running LithoKraft game as a pilot host; it also vendors a public snapshot of an older engine-and-game tree for reference. Those two relationships are not the same copy of the source, and this page keeps them distinct.
+LithoLattice is the engine. LithoKraft is the game that runs on it. The names are one word each, with both Ls capital in LithoLattice and a K in LithoKraft. PCHIE talks to a running LithoKraft game as a pilot host. The original Personal Control Harness, which holds the older public engine and game, is at https://github.com/JaydeeWetwork/PersonalControlHarness and is not copied into this repository.
 
 A component-level description of LithoKraft as of the 12 November 2026 playtest build, including signal rules, inventory, the Component Test world, and one spec sheet per named component, is in the [LithoKraft component reference](../components/README.md).
 
-## What PCHIE vendors
+## The public Personal Control Harness
 
-`third_party/pch-public/` is a verbatim archive of the public PersonalControlHarness repository at commit `754d37f1f45e5f11c2b5f0796dd2d12db27bb709` (23 October 2026). The imported paths are `engine/` (the older public LithoLattice engine), `game/LithoKraft/` (the visualization environment), and `LICENSE` (MIT). Docs, tests, private engine work, the Threading Handshake, LithoRoot rewrites, and key material were not imported. The root CMake build does not add that tree as a subdirectory and does not compile the game out of this snapshot.
+The original Personal Control Harness is public at https://github.com/JaydeeWetwork/PersonalControlHarness and is no longer copied into this repository. That public tree includes the older LithoLattice engine, the LithoKraft visualization environment, and an MIT license. The root CMake build does not compile the game.
 
-That snapshot is earlier than the 12 November playtest build described in the component reference. Do not assume that every block in that build, item, or inventory rule is present in the vendored copy. The PCHIE host seam (`include/pchie/pchie_host.h`) is clean-room code in this repository. It uses its own timing handshake and a flat world, and it does not link the vendored procedural-generation module.
+The public tree as of 23 October 2026 (commit `754d37f1f45e5f11c2b5f0796dd2d12db27bb709`) is earlier than the 12 November playtest build described in the component reference. Do not assume that every block in that build, item, or inventory rule is present in the public tree. The PCHIE host seam (`include/pchie/pchie_host.h`) is clean-room code in this repository. It uses its own timing handshake and a flat world, and it does not link the engine's procedural-generation module.
 
 ## The LithoKraft pilot
 

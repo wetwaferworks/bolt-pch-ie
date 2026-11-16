@@ -2,7 +2,7 @@
 
 This page lists every outside standard the Bolt PCHIE harness code implements or depends on. Each entry was checked against the source on 13 November 2026 by searching for the algorithm and reading the code that implements it. If a standard is not on this page, nothing in the harness uses it.
 
-Scope: first-party code only, meaning `include/`, `src/`, `tools/`, `tests/`, `vision/`, and `anchoring/`. The vendored LithoKraft engine under `third_party/` has its own crypto. It is covered in a short note at the end, because the harness never links it.
+Scope: first-party code only, meaning `include/`, `src/`, `tools/`, `tests/`, `vision/`, and `anchoring/`. The public Personal Control Harness at https://github.com/JaydeeWetwork/PersonalControlHarness has its own crypto. It is covered in a short note at the end, because the harness never links it and that tree is not copied into this repository.
 
 All the crypto here is written in-house on one SHA-256. Nothing imports OpenSSL, libsodium, or a system crypto API. "In the manner of" means we follow the standard's construction, but the code is not claimed to interoperate with other implementations of it.
 
@@ -101,7 +101,7 @@ All the crypto here is written in-house on one SHA-256. Nothing imports OpenSSL,
 - **What we use it for.** The transport under MCP.
 
 ### Model Context Protocol (MCP), revision 2025-11-25 (modelcontextprotocol.io; not an RFC)
-- **Where.** `LithoKraftEngineHost` (`include/pchie/LithoKraftEngineHost.h`). It sends `initialize` with `protocolVersion` "2025-11-25", then `notifications/initialized`, then `tools/call`. The stdio transport uses one message per line. The game side of the seam is described in `third_party/pch-public/engine/docs/MCP-GAME-SEAM.md`.
+- **Where.** `LithoKraftEngineHost` (`include/pchie/LithoKraftEngineHost.h`). It sends `initialize` with `protocolVersion` "2025-11-25", then `notifications/initialized`, then `tools/call`. The stdio transport uses one message per line. The game side of the seam is described in `engine/docs/MCP-GAME-SEAM.md` in the public Personal Control Harness (https://github.com/JaydeeWetwork/PersonalControlHarness).
 - **What we use it for.** Driving LithoKraft from `pchie_lk_pilot`: reading the world and moving Little Nemo in the real game.
 
 ### RFC 3629, UTF-8, a transformation format of ISO 10646
@@ -160,6 +160,6 @@ These shaped the design. Only the parts listed are implemented. Details and link
 ## Mentioned in the docs but not implemented in the harness code
 
 - **TPM 2.0 (Trusted Computing Group TPM 2.0 Library).** No harness code talks to a TPM. The one real measure, extend, and quote on PCR 23 was a separate bench check, described in [Hardware attestation](../guide/hardware-attestation.md). The string `tpm2.0-sim` in the tests is only a label on a simulated quote.
-- **Ed25519 (RFC 8032) and SHA-512 (FIPS 180-4).** They exist only in the vendored engine (`third_party/pch-public/engine/src/crypto/`), where LithoKraft uses them for mod signing. The harness does not link them. Our tree heads use the hash-based signature above, and the anchoring notes say so: "There is no elliptic-curve code in our tree".
+- **Ed25519 (RFC 8032) and SHA-512 (FIPS 180-4).** They exist only in the public Personal Control Harness (`engine/src/crypto/` at https://github.com/JaydeeWetwork/PersonalControlHarness), where LithoKraft uses them for mod signing. The harness does not link them, and that tree is not copied into this repository. Our tree heads use the hash-based signature above, and the anchoring notes say so: "There is no elliptic-curve code in our tree".
 
 Not used anywhere in the harness: CBOR, UUIDs, X.509, TLS, AEAD ciphers, PBKDF2, and every other RFC not listed above.

@@ -2,7 +2,7 @@
 
 LithoKraft is the voxel game that the harness walks its mazes in. It runs on the LithoLattice engine. The release ships the **12 November 2026 playtest build** as `lithokraft-d9-windows-x64.zip`: the same executable that was playtested, unchanged. This page describes that build, from its source and the [LithoKraft component reference](../components/README.md). It does not describe features the build does not have.
 
-The repository does not build this game. `third_party/pch-public/` holds an older public snapshot of the engine and game for reference only; see [LithoKraft and LithoLattice](lithokraft-integration.md).
+The repository does not build this game. The original Personal Control Harness, including the older public engine and game, is at https://github.com/JaydeeWetwork/PersonalControlHarness and is not copied into this repository. See [LithoKraft and LithoLattice](lithokraft-integration.md).
 
 ## What is in the download
 

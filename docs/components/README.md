@@ -4,7 +4,7 @@ This reference describes LithoKraft, the game, and LithoLattice, the engine it r
 
 LithoLattice is the engine (one word, both Ls capital). LithoKraft is the game (spelled with a K). Component names in this family keep the -or spelling: Multiplexor, Dialor, Watchor, Bitor, Pushor, Swivelor.
 
-A PCHIE-side account of the vendored public snapshot and the MCP pilot, which is an earlier and separate copy of the engine and game, is in the [LithoKraft and LithoLattice](../guide/lithokraft-integration.md) guide page. Do not assume that every block described here is present in that snapshot.
+A PCHIE-side account of the MCP pilot, and of the public Personal Control Harness (an earlier and separate tree of the engine and game, not copied into this repository), is in the [LithoKraft and LithoLattice](../guide/lithokraft-integration.md) guide page. Do not assume that every block described here is present in that public tree.
 
 Artwork on the spec sheets is by CloudAtlas. Each still shows one approved state, named in the caption. An image that shows an extended, turned, or bonded assembly is not a claim that that motion is implemented.
 

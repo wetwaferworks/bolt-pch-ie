@@ -20,7 +20,7 @@ Hashes quoted in this guide are provisional unless they belong to a frozen Offic
 - [TESLA stream authentication](tesla-stream-authentication.md) — The adapted TESLA stream, its OS-random seed, the watcher and its limits, and `--tesla off`.
 - [Hardware attestation](hardware-attestation.md) — RATS roles, TPM 2.0, PCR 23, the known-good registry, and honest caveats, with `--attest off`.
 - [Reasoning layers and the loop guard](reasoning-layers.md) — Opt-in layers, loop guard v2, and what official runners do and do not enable.
-- [LithoKraft and LithoLattice](lithokraft-integration.md) — The vendored public snapshot, the MCP control connection, and the pilot.
+- [LithoKraft and LithoLattice](lithokraft-integration.md) — The public Personal Control Harness, the MCP control connection, and the pilot.
 - [LithoKraft component reference](../components/README.md) — the 12 November playtest build, signal rules, inventory, the Component Test world, and one spec sheet per component.
 - [Build and test](build-and-test.md) — CMake, the quick CTest set, and the long suites.
 - [Results so far](results.md) — Honest findings from the recorded runs, including where L1 did not separate from null.

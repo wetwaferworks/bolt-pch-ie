@@ -86,7 +86,8 @@ A researcher-facing guide lives under [`docs/guide/`](docs/guide/README.md). It 
 | `experiments/` | Launchers for the planner comparison, query-before-plan, and Stage B runs, and the lab environment variables. |
 | `tools/` | Small utilities (maze preview, LithoKraft pilot, search gate). |
 | `docs/` | Researcher guide (`docs/guide/`), LithoKraft component reference (`docs/components/`), plans and specs (`docs/specs/`), working notes (`docs/notes/`), and measurement reports (`docs/reports/`). |
-| `third_party/` | Vendored dependencies, including the public PCH engine. |
+
+The original Personal Control Harness, including the older public LithoLattice engine and LithoKraft game, is at https://github.com/JaydeeWetwork/PersonalControlHarness. It is not copied into this repository.
 
 ## Build
 

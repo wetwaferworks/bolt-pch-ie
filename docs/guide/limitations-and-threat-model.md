@@ -23,7 +23,7 @@ PCHIE is a safety-first research harness. It is deterministic and tamper-evident
 - **That a `--tesla-seed dev-insecure` stream proves anything.** That seed is derived from the public maze seed so unit runs stay deterministic; anyone can rebuild its keys. Normal runs use a fresh OS-random seed and refuse to start without one.
 - **Model skill the measurements do not show.** At budget 16, L1 did not separate from null. Query-before-plan engaged and did not change the walk. Stage B still stalls honestly at door 1. Those are current limits of the recorded runs, not issues to be described as solved.
 - **That every long suite has been re-checked** with the loop guard on. The thirteen long suites listed in [Build and test](build-and-test.md) were excluded from the quick set used when the guard became the default.
-- **That the vendored LithoKraft snapshot is the 12 November playtest build.** The snapshot in `third_party/pch-public/` is dated 23 October 2026. The component reference describes a later playtest. See [LithoKraft and LithoLattice](lithokraft-integration.md).
+- **That the public Personal Control Harness is the 12 November playtest build.** The public tree at https://github.com/JaydeeWetwork/PersonalControlHarness, as of 23 October 2026, is earlier than the playtest described in the component reference. See [LithoKraft and LithoLattice](lithokraft-integration.md).
 
 ## Threat sketches that the tests already cover
 

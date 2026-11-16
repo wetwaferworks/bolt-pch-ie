@@ -37,4 +37,4 @@ This folder holds the specifications the code follows: the outside standards it 
 | Stream-auth defaults | [stream-auth-defaults.md](../notes/stream-auth-defaults.md) | TESLA and attestation on by default, and the off flags |
 | Loop guard v2 hash moves | [loop-guard-default-hash-moves.md](../notes/loop-guard-default-hash-moves.md) | Which hashes moved, and how `--loop-guard off` reproduces the old ones |
 | Little Nemo's episodic memory (NEML) | `include/pchie/neml/`, [quick start, section 6](../guide/quick-start-maze.md) | `NEML0002` ring of 16 x 256-byte receipts, the 384-token memory block, the memory prior, and its `neml.snap.v1` provenance record |
-| MCP game seam | `third_party/pch-public/engine/docs/MCP-GAME-SEAM.md` | The engine's tools, and one JSON-RPC message per line over stdio |
+| MCP game seam | `engine/docs/MCP-GAME-SEAM.md` in the [public Personal Control Harness](https://github.com/JaydeeWetwork/PersonalControlHarness) | The engine's tools, and one JSON-RPC message per line over stdio |

@@ -49,7 +49,7 @@ flowchart TB
 - **TESLA stream and watcher.** After an official append succeeds, a side session can MAC the sealed step and later disclose interval keys. A separate program, `pchie_tesla_watcher`, verifies the stream. See [TESLA stream authentication](tesla-stream-authentication.md).
 - **Attestation appraisal.** A verdict of Attested, Unattested, or Rejected is recorded beside the run label. In-process appraisal never talks to the TPM. A real measure, extend, and quote is a separate bench check against PCR 23. See [Hardware attestation](hardware-attestation.md).
 - **Transparency anchoring.** After a run finishes, `pchie_anchor` can emit a record into a local Merkle log, produce a fingerprint, and collect witness cosignatures. The log never feeds a run. See [Transparency anchoring](transparency-anchoring.md).
-- **LithoKraft pilot.** `pchie_lk_pilot` can decide a maze in the harness and then actuate the committed walk in a running LithoKraft game over the engine's MCP server. The game tree is a vendored public snapshot; the root build does not compile it. See [LithoKraft and LithoLattice](lithokraft-integration.md).
+- **LithoKraft pilot.** `pchie_lk_pilot` can decide a maze in the harness and then actuate the committed walk in a running LithoKraft game over the engine's MCP server. This repository does not include or compile the game. See [LithoKraft and LithoLattice](lithokraft-integration.md).
 
 ## Data flow of a committed step
 
@@ -95,7 +95,6 @@ Several parts of the tree are observers by construction:
 | `anchoring/` | Anchor tool, Merkle log, witness policies, and their tests. |
 | `tools/` | TESLA watcher, LithoKraft pilot, other small utilities. |
 | `experiments/` | Launchers that produced the recorded measurements. |
-| `third_party/pch-public/` | Vendored public PersonalControlHarness snapshot (engine and LithoKraft). |
 | `docs/guide/` | This guide. |
 
 CUDA is an optional backend (`PCHIE_CUDA`). The reasoning layer is part of the root CMake build. Model weights stay outside the repository.
