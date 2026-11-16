@@ -275,6 +275,14 @@ target_link_libraries(pchie_harness PUBLIC pchie_research)
 add_executable(pchie_harness_test tests/harness/pchie_harness_test.cpp tests/harness/task_eval_test.cpp tests/harness/plugs_test.cpp)
 target_link_libraries(pchie_harness_test PRIVATE pchie_harness)
 add_test(NAME pchie_harness COMMAND pchie_harness_test --unit --dir ${CMAKE_CURRENT_BINARY_DIR})
+# Plug server for the thin Gymnasium adapter in tools/gym (off-path: no chain, no keys, no network).
+add_executable(pchie_plug_server tools/pchie_plug_server.cpp)
+target_link_libraries(pchie_plug_server PRIVATE pchie_harness)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME pchie_gym_adapter COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/gym/test_pchie_gym.py
+           --server $<TARGET_FILE:pchie_plug_server>)
+endif()
 
 # L1/L2/sealed-tuple flags-on ablations (decide path only, CPU).
 add_executable(pchie_rl_l1l2_test tests/rl/pchie_rl_l1l2_test.cpp)

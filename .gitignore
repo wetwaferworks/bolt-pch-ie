@@ -31,3 +31,7 @@ nemo_chat_notes.bin
 nemo_episodic.lock.d/
 neml-test/
 vision/pure.inc
+
+# Python caches from the off-path adapter tests.
+__pycache__/
+*.pyc

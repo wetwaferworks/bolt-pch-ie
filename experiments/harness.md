@@ -53,3 +53,14 @@ half marks scaled by graded progress.
 Note on B1 seeds: most seeds fail the generator's key-and-door check and fall back to the same corner layout
 (seeds 2 and 3 are the same maze). The maze plug grades with a layout hash, and the maze runner prints one, so
 a comparison can prove its seeds are different mazes.
+
+## Gymnasium adapter (`tools/gym/pchie_gym.py`, off-path)
+
+For outside researchers: `PchieEnv(plug, server=...)` wraps any harness plug as a Gymnasium environment
+(`reset(seed)`, `step(action)` returning `obs, reward, terminated, truncated, info`, `render()` as text,
+and `grade()` for after the episode). It drives `pchie_plug_server` over stdin/stdout, one JSON object per
+line. It is never in a hashed path: the server writes no chain or side chain, reads no keys and opens no
+network connection. With Gymnasium installed, `register_all()` registers `Pchie/LithoKraftMazeB1-v1`,
+`Pchie/LithoKraftMazeStageA-v1`, `Pchie/LithoLatticeTestbedStub-v0` and `Pchie/CraftaxLikeGrid-v1`.
+Without it, the same class runs on small stand-ins, so the adapter tests run anywhere
+(CTest `pchie_gym_adapter`, when Python 3 is found).

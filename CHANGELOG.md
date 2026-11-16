@@ -12,6 +12,7 @@ All notable changes to Bolt PCHIE are listed here, newest first.
 - **ASCII views for the context comparison.** `pchie_lk_visnav --obs ascii[=1024|2048]` adds verified Nemo View pictures (`vision.capture_ascii`) to the live view, with their own side chain. Off by default.
 - **Harness: tasks, solvers, scorers and transcripts.** A new `pchie_harness` library runs tasks the Inspect AI way, rebuilt in C++: samples, a solver, a scorer, integer scores, and a transcript per sample written onto its own side chain in sample order. Results and the chain head are the same at every thread count. Off the official path. See [experiments/harness.md](experiments/harness.md).
 - **Harness: one plug for many games.** Every game now speaks one interface (reset, step, a text observation, fixed actions, integer rewards, a state digest), after the BALROG pattern. Built in: the headless LithoKraft B1 and Stage A mazes, a LithoLattice testbed stub, and a small Craftax-like crafting grid. Agents plug into the other side; this is the socket Mjolnir will use. Grading is read after the episode and never shown to the agent. Game episodes run as harness tasks, so they get transcripts, a side chain and the same results at every thread count.
+- **Gymnasium adapter (off-path).** `tools/gym/pchie_gym.py` wraps any harness plug as a Gymnasium environment for outside researchers, talking to the new `pchie_plug_server` over stdin/stdout. It is never in a hashed path and needs no network. It also runs without Gymnasium installed, using small stand-ins.
 
 ### Security
 
