@@ -16,10 +16,10 @@ under half of Q4_K, and the inner product needs only integer adds.
 | Absmean ternary quantizer, int8 activation quantizer | done |
 | Scalar reference matvec (the oracle) | done |
 | B3 (1.6 bits per weight) storage and B3 / I2 transcoding | done |
-| SSSE3 kernel (older x86, such as Sandy Bridge without AVX2) | next |
-| AVX2 kernel | next |
-| NEON kernel (AArch64, with and without the dot-product instructions) | next |
-| Run-time CPU dispatch | in place (CPUID and OS check on x86, HWCAP on AArch64 Linux and Android); only the scalar kernel is built so far |
+| SSSE3 kernel (older x86, such as Sandy Bridge without AVX2) | done, matches the reference bit for bit |
+| AVX2 kernel | done, matches the reference bit for bit |
+| NEON kernel (AArch64, with and without the dot-product instructions) | done; checked under emulation, not yet on a phone |
+| Run-time CPU dispatch | done (CPUID and OS check on x86, HWCAP on AArch64 Linux and Android) |
 | Converter from existing models, model wiring, CUDA kernel | not started |
 
 ## The math
