@@ -5,6 +5,31 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
 
+# Sanitizer builds for checking, never for hashes of record: PCHIE_SANITIZE=address, undefined, thread, or
+# a comma list such as address,undefined. Off by default. MSVC supports address only.
+set(PCHIE_SANITIZE "" CACHE STRING "Sanitizers to build with: address, undefined, thread (comma list), or empty")
+if(PCHIE_SANITIZE)
+  string(REPLACE "," ";" _pchie_san_list "${PCHIE_SANITIZE}")
+  foreach(_san IN LISTS _pchie_san_list)
+    if(NOT _san MATCHES "^(address|undefined|thread)$")
+      message(FATAL_ERROR "PCHIE_SANITIZE: unknown sanitizer '${_san}' (use address, undefined, thread)")
+    endif()
+  endforeach()
+  if(MSVC)
+    if(NOT PCHIE_SANITIZE STREQUAL "address")
+      message(FATAL_ERROR "PCHIE_SANITIZE: MSVC supports address only")
+    endif()
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/fsanitize=address>)
+  else()
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fsanitize=${PCHIE_SANITIZE}> $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>)
+    if(PCHIE_SANITIZE MATCHES "undefined")
+      add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-sanitize-recover=undefined>)
+    endif()
+    add_link_options(-fsanitize=${PCHIE_SANITIZE})
+  endif()
+  message(STATUS "PCHIE_SANITIZE: ${PCHIE_SANITIZE} (checking build; hashes of record come from a normal Release build)")
+endif()
+
 add_library(pchie_core STATIC
   src/pchie_tree.cpp src/pchie_kv_cow.cpp src/pchie_q4_det.cpp src/pchie_rollout.cpp src/pchie_host.cpp src/pchie_gguf.cpp
   src/pchie_kv_pools.cpp src/pchie_gemma4.cpp src/pchie_mcts.cpp
@@ -218,7 +243,8 @@ if(PCHIE_CUDA)
     add_library(pchie_cuda STATIC src/pchie_cuda.cu)
     target_include_directories(pchie_cuda PUBLIC include)
     set_target_properties(pchie_cuda PROPERTIES CUDA_STANDARD 17)
-    target_compile_options(pchie_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-fmad=false -prec-div=true -prec-sqrt=true -ftz=false -Xcompiler=/fp:precise>)
+    target_compile_options(pchie_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-fmad=false -prec-div=true -prec-sqrt=true -ftz=false>
+                           $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>>:-Xcompiler=/fp:precise>)
     target_link_libraries(pchie_cuda PUBLIC pchie_core CUDA::cudart)
     add_executable(pchie_cuda_gate tests/pchie_cuda_gate.cpp)
     target_link_libraries(pchie_cuda_gate PRIVATE pchie_cuda)
@@ -231,9 +257,28 @@ if(PCHIE_CUDA)
     target_link_libraries(pchie_cuda_backend_guard_test PRIVATE pchie_cuda)
     add_test(NAME pchie_cuda_backend_guard COMMAND pchie_cuda_backend_guard_test)
     set_tests_properties(pchie_cuda_backend_guard PROPERTIES LABELS cuda)
+    # The three CPU-vs-GPU gates run a real model. Give its path in PCHIE_GATE_MODEL to register them
+    # (label cuda; run with ctest -L cuda). Without it they are built but not registered.
+    set(PCHIE_GATE_MODEL "" CACHE FILEPATH "Model file for the CUDA gates (empty = gates not registered)")
+    if(PCHIE_GATE_MODEL)
+      add_test(NAME pchie_cuda_gate COMMAND pchie_cuda_gate ${PCHIE_GATE_MODEL} 4)
+      add_test(NAME pchie_search_gate COMMAND pchie_search_gate ${PCHIE_GATE_MODEL} 4)
+      add_test(NAME pchie_fork_batching COMMAND pchie_fork_batching ${PCHIE_GATE_MODEL} 4)
+      set_tests_properties(pchie_cuda_gate pchie_search_gate pchie_fork_batching PROPERTIES LABELS cuda TIMEOUT 3600)
+    endif()
   else()
     message(STATUS "PCHIE_CUDA: no CUDA compiler found, skipping the CUDA backend")
   endif()
+endif()
+
+# Fuzz driver for the outside-input parsers (MiniJson, TESLA stream lines, GGUF). Off by default; pair it
+# with PCHIE_SANITIZE=address,undefined. The smoke test runs a short fixed-seed pass of each.
+option(PCHIE_FUZZ "Build the parser fuzz driver" OFF)
+if(PCHIE_FUZZ)
+  add_executable(pchie_fuzz fuzz/pchie_fuzz.cpp)
+  target_link_libraries(pchie_fuzz PRIVATE pchie_core)
+  add_test(NAME pchie_fuzz_smoke COMMAND pchie_fuzz all 3000 1)
+  set_tests_properties(pchie_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 900)
 endif()
 
 # CUDA backend shape limits, checked on the host (no GPU or CUDA compiler needed).
