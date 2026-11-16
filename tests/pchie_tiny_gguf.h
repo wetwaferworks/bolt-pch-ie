@@ -23,6 +23,7 @@ struct Model {
     std::vector<int32_t> swa_pattern{0};
     struct T { std::string name; std::vector<uint64_t> dims; uint32_t type; float fill = 0.0f; };   // fill: value of every F32 element
     std::vector<T> tensors;
+    uint64_t align = 32;                                  // general.alignment (written only when not 32)
     void set(const std::string& k, double v) { for (auto& kv : nums) if (kv.first == k) { kv.second = v; return; } nums.push_back({k, v}); }
     T* find(const std::string& n) { for (auto& t : tensors) if (t.name == n) return &t; return nullptr; }
 };
@@ -60,8 +61,9 @@ inline Bytes build(const Model& m) {
     Bytes b{'G', 'G', 'U', 'F'};
     put<uint32_t>(b, 3);
     put<uint64_t>(b, m.tensors.size());
-    put<uint64_t>(b, m.nums.size() + 4);
+    put<uint64_t>(b, m.nums.size() + 4 + (m.align != 32 ? 1 : 0));
     put_str(b, "general.architecture"); put<uint32_t>(b, 8); put_str(b, "gemma4");
+    if (m.align != 32) { put_str(b, "general.alignment"); put<uint32_t>(b, 4); put<uint32_t>(b, uint32_t(m.align)); }
     for (const auto& kv : m.nums) { put_str(b, kv.first); put<uint32_t>(b, 12); put<double>(b, kv.second); }
     put_str(b, "gemma4.attention.sliding_window_pattern"); put<uint32_t>(b, 9); put<uint32_t>(b, 5); put<uint64_t>(b, m.swa_pattern.size());
     for (int32_t v : m.swa_pattern) put<int32_t>(b, v);
@@ -75,16 +77,16 @@ inline Bytes build(const Model& m) {
         for (uint64_t d : t.dims) put<uint64_t>(b, d);
         put<uint32_t>(b, t.type);
         put<uint64_t>(b, off);
-        off += (tensor_bytes(t) + 31) / 32 * 32;
+        off += (tensor_bytes(t) + m.align - 1) / m.align * m.align;
     }
-    while (b.size() % 32) b.push_back(0);
+    while (b.size() % m.align) b.push_back(0);
     const size_t data0 = b.size();
     b.insert(b.end(), size_t(off), uint8_t(0));
     uint64_t at = 0;
     for (const auto& t : m.tensors) {
         if (t.type == 0 && t.fill != 0.0f)
             for (uint64_t i = 0; i < tensor_bytes(t) / 4; ++i) std::memcpy(&b[data0 + size_t(at + 4 * i)], &t.fill, 4);
-        at += (tensor_bytes(t) + 31) / 32 * 32;
+        at += (tensor_bytes(t) + m.align - 1) / m.align * m.align;
     }
     return b;
 }

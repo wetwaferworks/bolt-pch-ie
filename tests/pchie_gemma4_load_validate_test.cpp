@@ -108,6 +108,20 @@ int main() {
         char label[160]; std::snprintf(label, sizeof label, "rope_freqs.weight holding %g is refused", double(f));
         refused(m, "bad_freq", label);
     }
+    {   // A file alignment of 2 plus a 2- or 4-byte first tensor (chosen from where the data section starts)
+        // puts every following tensor 2 bytes off a 4-byte boundary.
+        Model m = good_model(); m.align = 2;
+        m.tensors.insert(m.tensors.begin(), Model::T{"pad.weight", {1}, 30});
+        write_file(m, "g4_load_validate_probe.gguf");
+        GgufFile probe; std::string perr;
+        const bool probed = probe.open("g4_load_validate_probe.gguf", perr);
+        std::remove("g4_load_validate_probe.gguf");
+        if (probed && probe.data_offset % 4 == 2) m.tensors[0].dims = {2};   // same header size, 4 bytes of data
+        check(probed, "the alignment-2 probe file opens");
+        refused(m, "align2", "a tensor that does not start on a 4-byte boundary (file alignment 2) is refused");
+        Model ok = good_model(); ok.align = 4;
+        check(load(ok, "align4"), "a model written with alignment 4 still loads");
+    }
     std::printf("[G4LOAD] %d PASS / %d FAIL\n", passes, fails);
     return fails ? 1 : 0;
 }

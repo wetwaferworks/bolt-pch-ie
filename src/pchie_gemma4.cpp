@@ -33,7 +33,8 @@ bool MappedFile::open(const std::string& path, std::string& err) {
 #if defined(_WIN32)
     HANDLE f = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) { err = "cannot open " + path; return false; }
-    LARGE_INTEGER sz; GetFileSizeEx(f, &sz);
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(f, &sz) || sz.QuadPart <= 0) { CloseHandle(f); err = "cannot read the size of " + path; return false; }
     HANDLE m = CreateFileMappingA(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
     if (!m) { CloseHandle(f); err = "CreateFileMapping failed"; return false; }
     const void* p = MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
@@ -42,9 +43,10 @@ bool MappedFile::open(const std::string& path, std::string& err) {
 #else
     fd_ = ::open(path.c_str(), O_RDONLY);
     if (fd_ < 0) { err = "cannot open " + path; return false; }
-    struct stat st; fstat(fd_, &st);
+    struct stat st{};
+    if (fstat(fd_, &st) != 0 || st.st_size <= 0) { ::close(fd_); fd_ = -1; err = "cannot read the size of " + path; return false; }
     void* p = mmap(nullptr, size_t(st.st_size), PROT_READ, MAP_SHARED, fd_, 0);
-    if (p == MAP_FAILED) { err = "mmap failed"; return false; }
+    if (p == MAP_FAILED) { ::close(fd_); fd_ = -1; err = "mmap failed"; return false; }
     base_ = static_cast<const uint8_t*>(p); size_ = uint64_t(st.st_size);
 #endif
     return true;
@@ -336,6 +338,9 @@ bool Gemma4Model::load(const std::string& path, std::string& err) {
         if (t->dims.empty() || t->dims.size() > 2) throw std::runtime_error("unsupported tensor rank " + name);
         if (!t->size_known || t->nbytes == 0) throw std::runtime_error("unsupported tensor type " + name);
         if (t->offset > data_size || t->nbytes > data_size - t->offset) throw std::runtime_error("tensor outside the file " + name);
+        // Weights are read through float and uint16 pointers: every tensor must start on a 4-byte boundary
+        // (a file alignment of 1 or 2 could otherwise place one off it).
+        if ((gguf_.data_offset + t->offset) % 4 != 0) throw std::runtime_error("tensor not 4-byte aligned " + name);
         q.data = map_.data() + gguf_.data_offset + t->offset; q.type = t->type; q.ne0 = t->dims[0]; q.ne1 = t->dims.size() > 1 ? t->dims[1] : 1;
     };
     auto F = [&](const std::string& name, uint64_t n) -> const float* {
