@@ -1,8 +1,8 @@
 # Release notes
 
-## Next release (unreleased)
+## 0.1.1
 
-This release is a security hardening pass. It comes from our first security review, by Gizmo (ChatGPT Luna 6). Every finding was checked against the code and fixed, and each fix has its own tests. No official or neutrality hash moved: the maze H_world, the B1 actions and the gauntlet H_bolt are the same as before.
+This release is a security hardening pass. It comes from our first security review, by Gizmo (ChatGPT Luna 6), and a second hardening review by Helia (Google Hydrogen), cross-checked by Luna (ChatGPT Luna 6). Every finding was checked against the code and fixed, and each fix has its own tests. No official or neutrality hash moved: the maze H_world, the B1 actions and the gauntlet H_bolt are the same as before.
 
 ### What changed for you
 
@@ -16,6 +16,13 @@ This release is a security hardening pass. It comes from our first security revi
 - **AVX2 is a build option.** `-DPCHIE_AVX2=AUTO|ON|OFF`, AUTO by default. Without AVX2 the portable kernels are used; check the maze hashes before comparing such a build with an AVX2 one.
 - **Witness ids are limited** to letters, digits, `.`, `_` and `-`, 1 to 64 characters, with no leading dot or dash and no `..`.
 - **Secrets are wiped after use** (best effort).
+- **Hostile model files are refused, not trusted.** BF16 rows must be a multiple of 8, norm, softcap and rope settings must be finite and positive, tensors must be 4-byte aligned, and the GPU backend refuses weights its kernels cannot hold.
+- **KV cache reads are bounds-checked** in release builds, and a failed generation gives its pages back.
+- **The TESLA watcher stays small on hostile streams** (gap list capped, step space capped) and fails any stream with steps after its end marker.
+- **The anchor chain cannot fork.** Emits are serialized on a log lock and appended durably; short command lines and malformed cosignatures get a clear error; Merkle ranges past the log are refused.
+- **Crypto hygiene.** Constant-time MAC and signature compares, HMAC and HKDF key wiping, and HKDF output capped at 8160 bytes.
+- **Stricter JSON** (no raw control characters, lone surrogates or non-JSON numbers) and clean MCP handle shutdown.
+- **Checking builds.** `-DPCHIE_SANITIZE=...` for sanitizer builds, `-DPCHIE_FUZZ=ON` for the parser fuzz driver, and `ctest -L cuda` for the CPU-vs-GPU gates when `PCHIE_GATE_MODEL` is set.
 - **New [SECURITY.md](SECURITY.md)** with the status of the cryptography, the fixes, the known limits and how to report a problem.
 
 ### Known limits

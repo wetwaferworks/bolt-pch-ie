@@ -2,7 +2,7 @@
 
 All notable changes to Bolt PCHIE are listed here, newest first.
 
-## Unreleased
+## 0.1.1
 
 ### Added
 
@@ -27,6 +27,32 @@ These fixes come from our first security review, by Gizmo (ChatGPT Luna 6). Each
 - **One-time signing never reuses a leaf.** Signing takes an exclusive lock that every process honors. The next leaf index is reserved durably (unique temp file, flushed, atomic rename) before a signature is released. An exhausted key refuses to sign and leaves its file unchanged. Signing keys come from the OS random generator.
 - **Smaller items.** AVX2 is now a CMake option, `-DPCHIE_AVX2=AUTO|ON|OFF`; AUTO (the default) turns it on only when both the compiler and the build machine support it. Witness ids must match `[A-Za-z0-9._-]{1,64}`, with no leading dot or dash and no `..`. Signing seeds and key buffers are wiped after use (best effort).
 - **SECURITY.md.** New security notes covering the status of the cryptography, the hardening above, the known limits and how to report a problem.
+
+### Security: hardening review
+
+These fixes come from the hardening review by Helia (Google Hydrogen), cross-checked by Luna (ChatGPT Luna 6), plus a few found while checking their reports. Each fix has its own test, and none of them moves a run hash.
+
+- **CUDA matvec row limit.** The Q4_K, Q6_K and Q8_0 GPU kernels keep one partial sum per block in a fixed shared array. A row with more blocks than that array holds is now refused at backend start, so the run stays on the CPU instead of corrupting the sums.
+- **CUDA scratch sizing.** The GPU scratch buffers are sized from the widest head and the widest matvec input, not from the global head and `d_ff`, so an unusual but accepted model cannot write past them.
+- **CUDA copy mirror unhooked on shutdown.** Destroying the GPU backend removes its copy-on-write hooks from the KV pools, and a failed GPU page copy stops the next forward pass instead of being ignored.
+- **BF16 rows must be a multiple of 8.** The loader refuses other BF16 rows, and the CPU and GPU dot products no longer read past a short last group.
+- **Norm, softcap and rope settings must be finite and positive.** The RMS norm epsilon, the logit softcap, both rope bases and every rope frequency factor are checked at load, so a bad file is refused instead of producing NaN logits.
+- **NaN-safe deterministic exp and rounding.** NaN no longer reaches an undefined float-to-int cast, and out-of-range values saturate. Results for every finite in-range input are unchanged.
+- **Model file size checks and tensor alignment.** The size calls are checked, an empty file is refused, the file handle is closed on every failure, and any tensor not on a 4-byte boundary is refused.
+- **KV page bounds.** Every KV read checks the layer, the page table and that the page is live, in release builds too. Reference counts are checked before every release and copy, positions past a 16M-token ceiling are refused, and a failed generation releases its pages.
+- **TESLA watcher gap report and step cap.** Missing steps are counted with only the first 1024 listed, and the step space is capped at 2^24, so a short hostile stream can no longer ask for gigabytes.
+- **TESLA after-end flag.** A step after the end-of-steps marker, or a second marker, now fails the stream.
+- **Anchor emits are serialized.** Emits take a lock on the log directory, re-read the log, check for a duplicate run id and append with a flush to disk before the tree head is signed, so two emits can no longer fork the anchor chain.
+- **Anchor argument and cosignature checks.** Every `pchie_anchor` subcommand checks its argument count first, and a cosignature with no signature or tree size is reported as malformed.
+- **Merkle ranges bounded.** The Merkle root and proof helpers refuse a tree size larger than the log instead of reading past it.
+- **Constant-time compares.** MAC and quote signature checks use a constant-time compare.
+- **HMAC and HKDF key wiping.** Key-derived buffers are wiped, also on errors, HKDF refuses more than 8160 bytes, and the anchor signing key wipes its seed when it goes away.
+- **Attestation and chain verifier.** A caller can no longer mark a run Attested without a quote appraisal, and the chain verifier no longer names record 0 as the bad link when it cannot locate it.
+- **Race-free join errors.** The deterministic join's error paths use atomics (still no mutex), and the job dispatcher refuses a worker count outside 1 to 16.
+- **NEML ledger lock owner token.** A stale lock is taken over safely, a holder only removes its own lock, and a snapshot that cannot get the lock reports busy.
+- **Stricter MiniJson and MCP handle cleanup.** Raw control characters, lone surrogates and non-JSON numbers are refused, numbers are parsed independent of locale, and the MCP client closes every handle on a failed start.
+- **KV free list sorted once per release.** Same page order as before, less work.
+- **Checking builds.** `-DPCHIE_SANITIZE=address,undefined,thread` builds everything with sanitizers (MSVC: address only), the three CPU-vs-GPU gates are registered under the `cuda` label when `PCHIE_GATE_MODEL` is set, and `-DPCHIE_FUZZ=ON` builds a reproducible fuzz driver for the MiniJson, TESLA stream and GGUF parsers.
 
 ### Changed
 
