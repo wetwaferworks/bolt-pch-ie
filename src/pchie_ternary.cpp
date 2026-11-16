@@ -418,7 +418,7 @@ static uint64_t xgetbv0() {
     return (uint64_t(hi) << 32) | lo;
 #endif
 }
-static Tier hw_tier() noexcept {
+static Tier probe_hw_tier() noexcept {
     uint32_t r[4];
     cpuid(0, 0, r);
     const uint32_t max_leaf = r[0];
@@ -436,15 +436,23 @@ static Tier hw_tier() noexcept {
 #elif PCHIE_TERNARY_ARM64
 // NEON is part of every AArch64 CPU. A build that uses the dot-product instructions (-mcpu with +dotprod)
 // also needs the CPU to have them; on Linux and Android the kernel reports that in AT_HWCAP (ASIMDDP, bit 20).
-static Tier hw_tier() noexcept {
+static Tier probe_hw_tier() noexcept {
 #if defined(__ARM_FEATURE_DOTPROD) && defined(__linux__)
     if ((getauxval(AT_HWCAP) & (1ul << 20)) == 0) return Tier::Scalar;
 #endif
     return Tier::NEON;
 }
 #else
-static Tier hw_tier() noexcept { return Tier::Scalar; }
+static Tier probe_hw_tier() noexcept { return Tier::Scalar; }
 #endif
+
+// The probe runs CPUID and XGETBV (or getauxval), which are slow and, under some hypervisors, trap: about a
+// microsecond per call on Windows. dot_row asks for every row, so probe once. The answer cannot change while the
+// process runs, and a function-local static is initialised exactly once even with several threads.
+static Tier hw_tier() noexcept {
+    static const Tier cached = probe_hw_tier();
+    return cached;
+}
 
 bool tier_supported(Tier t) noexcept {
     if (t == Tier::Scalar) return true;
