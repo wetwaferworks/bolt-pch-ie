@@ -139,7 +139,7 @@ inline AttestationAppraisal appraise_attestation(const SimulatedQuote& quote, co
     return a;
   }
   const std::vector<uint8_t> want_sig = hmac_sha256(test_ak, simulated_quote_tbs(quote));
-  if (want_sig != quote.signature) {
+  if (!ct_equal(want_sig, quote.signature)) {
     a.status = AttestationStatus::Rejected;
     a.reason = "bad signature";
     return a;

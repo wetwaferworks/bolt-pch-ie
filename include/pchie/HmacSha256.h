@@ -46,4 +46,13 @@ inline void wipe_bytes(std::vector<uint8_t>& v) {
   v.clear();
 }
 
+// Compare a computed MAC or signature with a presented one in time that depends only on the lengths, so the
+// position of the first differing byte is not visible. Lengths are not secret.
+inline bool ct_equal(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+  if (a.size() != b.size()) return false;
+  volatile uint8_t acc = 0;
+  for (size_t i = 0; i < a.size(); ++i) acc = uint8_t(acc | (a[i] ^ b[i]));
+  return acc == 0;
+}
+
 }  // namespace pchie

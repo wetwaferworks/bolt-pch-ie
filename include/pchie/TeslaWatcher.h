@@ -264,7 +264,7 @@ class TeslaWatcher {
       const TeslaStepPacket& p = item.packet;
       if (p.step_index >= result_.failed_at) continue;  // do not release later steps
       const std::vector<uint8_t> got = tesla_step_mac(mk, p);
-      if (got != p.mac) {
+      if (!ct_equal(got, p.mac)) {
         flag(TeslaFlag::BadMac, p.step_index, i);
         fail_at(p.step_index);
         continue;
