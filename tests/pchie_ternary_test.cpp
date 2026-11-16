@@ -201,7 +201,8 @@ static void test_format() {
     // bad scales are refused even with a correct checksum
     std::mt19937 r2(3);
     auto q = rand_trits(r2, 128);
-    for (float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -1.0f}) {
+    for (float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -1.0f,
+                      std::numeric_limits<float>::denorm_min(), 1e-39f}) {
         Tensor t = make_tensor(q, 1, 128, Packing::I2, ScaleMode::PerTensor, r2); t.scales[0] = bad;
         auto buf = serialize(t); View v;
         CHECK(parse(buf.data(), buf.size(), Limits(), v) == Status::BadScale, "bad scale %g refused", double(bad));
@@ -328,6 +329,43 @@ static void test_kernels() {
     }
 }
 
+// Edge scales: subnormal gammas become exact zero groups; outputs that overflow are reported and zeroed.
+static void test_edge_scales() {
+    std::mt19937 r(21);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    std::vector<float> W(32 * 256);
+    for (auto& w : W) w = nd(r) * 1e-41f;
+    Tensor t;
+    CHECK(quantize_absmean(W.data(), 32, 256, ScaleMode::PerBlock, Packing::I2, t) == Status::Ok, "tiny weights quantize");
+    bool zero = true; for (float s : t.scales) if (s != 0.0f) zero = false;
+    std::vector<int8_t> q(256); bool codes0 = true;
+    for (uint64_t i = 0; i < t.rows; ++i) { unpack_row(t.codes.data() + i * t.row_bytes(), 256, Packing::I2, q.data()); for (auto c : q) if (c) codes0 = false; }
+    CHECK(zero && codes0, "subnormal gammas flushed to exact zero groups");
+    // Mixed: one row tiny, the rest ordinary; only the tiny blocks flush.
+    for (size_t i = 0; i < W.size(); ++i) W[i] = nd(r) * (i < 256 ? 1e-41f : 0.02f);
+    CHECK(quantize_absmean(W.data(), 32, 256, ScaleMode::PerBlock, Packing::I2, t) == Status::Ok &&
+          t.scales[0] == 0.0f && t.scales[1] == 0.0f && t.scales[2] > 0.0f, "only the tiny blocks flush");
+    // Overflow: scales near FLT_MAX with flat activations overflow float at every tier.
+    auto qq = rand_trits(r, 32 * 256);
+    for (ScaleMode m : {ScaleMode::PerTensor, ScaleMode::PerBlock}) {
+        Tensor h = make_tensor(qq, 32, 256, Packing::I2, m, r);
+        for (auto& s : h.scales) s = 3e38f;
+        View v; CHECK(view_of(h, v) == Status::Ok, "huge finite scales are valid");
+        std::vector<float> xf(256, 1.0f); ActRow x; quantize_activations(xf.data(), 256, x);
+        for (Tier tr : tiers_here()) {
+            std::vector<float> y(32, 1.0f);
+            const Status st = matvec(v, x, y.data(), 32, tr, nullptr);
+            bool zeros = true; for (float f : y) if (f != 0.0f) zeros = false;
+            CHECK(st == Status::NonFinite && zeros, "overflow reported and zeroed, tier %s mode %d", tier_name(tr), int(m));
+        }
+        // Large but safe scales still compute normally.
+        for (auto& s : h.scales) s = 1e30f;
+        view_of(h, v);
+        std::vector<float> y(32);
+        CHECK(matvec(v, x, y.data(), 32, Tier::Scalar, nullptr) == Status::Ok && std::isfinite(y[0]), "1e30 scales ok");
+    }
+}
+
 static void test_dispatch() {
     const Tier best = detect_tier();
     std::printf("detected tier: %s\n", tier_name(best));
@@ -358,6 +396,7 @@ int main() {
     test_format();
     test_reference_math();
     test_kernels();
+    test_edge_scales();
     test_dispatch();
     std::printf("pchie_ternary_test: %d PASS / %d FAIL\n", passes, fails);
     return fails == 0 ? 0 : 1;

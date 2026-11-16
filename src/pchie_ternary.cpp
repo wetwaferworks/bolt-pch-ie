@@ -3,6 +3,7 @@
 #include "pchie_ternary_internal.h"
 #include "pchie/pchie_q4_det.h"   // round_half_even_f32 (the repo's pinned rounding rule)
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -189,7 +190,8 @@ Status quantize_absmean(const float* W, uint64_t rows, uint64_t cols, ScaleMode 
         for (uint64_t r = r0; r < r1; ++r)
             for (uint64_t c = 0; c < len_cols; ++c) s += std::fabs(double(W[r * stride_rows + start + c]));
         const double cnt = double(r1 - r0) * double(len_cols);
-        return float(s / cnt);
+        const float g = float(s / cnt);
+        return g >= FLT_MIN ? g : 0.0f;   // subnormal: an exact zero group, so inference never does denormal math
     };
     if (mode == ScaleMode::PerTensor) scales[0] = absmean(0, cols, cols, 0, rows);
     else for (uint64_t r = 0; r < rows; ++r) for (uint64_t b = 0; b < nb; ++b)
@@ -281,6 +283,7 @@ static Status check_scales(const uint8_t* raw, uint64_t n) {
     for (uint64_t i = 0; i < n; ++i) {
         const float s = load_f32_le(raw + 4 * i);
         if (!std::isfinite(s) || s < 0.0f) return Status::BadScale;   // -0.0 compares equal to 0: allowed
+        if (s != 0.0f && s < FLT_MIN) return Status::BadScale;          // subnormal: results would depend on FTZ/DAZ
     }
     return Status::Ok;
 }
@@ -503,6 +506,13 @@ Status matvec(const View& w, const ActRow& x, float* y, uint64_t y_len, Tier tie
     };
     if (pool) pool->parallel_for(chunks, work);
     else for (int c = 0; c < chunks; ++c) work(c);
+    // Finite weights, scales and activations can still overflow float (scales near FLT_MAX). Report it and leave
+    // a safe all-zero output rather than infinities. One pass over the outputs, after the parallel phase.
+    for (uint64_t i = 0; i < y_len; ++i)
+        if (!std::isfinite(y[i])) {
+            for (uint64_t j = 0; j < y_len; ++j) y[j] = 0.0f;
+            return Status::NonFinite;
+        }
     return Status::Ok;
 }
 

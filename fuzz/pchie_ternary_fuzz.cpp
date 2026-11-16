@@ -22,10 +22,12 @@ static int exercise(const uint8_t* data, size_t len) {
     for (size_t i = 0; i < xf.size(); ++i) xf[i] = float(int(i % 17) - 8) * 0.25f;
     ActRow x; quantize_activations(xf.data(), v.cols, x);
     std::vector<float> ref(static_cast<size_t>(v.rows)), y(static_cast<size_t>(v.rows));
-    if (matvec(v, x, ref.data(), v.rows, Tier::Scalar, nullptr) != Status::Ok) std::abort();
+    const Status sref = matvec(v, x, ref.data(), v.rows, Tier::Scalar, nullptr);
+    if (sref != Status::Ok && sref != Status::NonFinite) std::abort();
+    if (sref == Status::NonFinite) for (float f : ref) if (f != 0.0f) std::abort();   // overflow leaves zeros
     for (Tier t : {Tier::SSSE3, Tier::AVX2, Tier::NEON}) {
         if (!tier_supported(t)) continue;
-        matvec(v, x, y.data(), v.rows, t, nullptr);
+        if (matvec(v, x, y.data(), v.rows, t, nullptr) != sref) std::abort();
         if (std::memcmp(y.data(), ref.data(), y.size() * sizeof(float)) != 0) std::abort();   // bit for bit
     }
     return 1;

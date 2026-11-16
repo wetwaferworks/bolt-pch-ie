@@ -50,7 +50,7 @@ enum class Status : int {
     BadHeader,         // a field out of range, reserved bytes not zero, sections overlapping or misaligned
     BadChecksum,
     BadCode,           // I2 code 3, B3 byte > 242, or non-zero padding weights
-    BadScale,          // non-finite or negative scale
+    BadScale,          // non-finite, negative or subnormal scale
     NonFinite,         // NaN or infinity in weights or activations
 };
 const char* status_name(Status s) noexcept;
@@ -89,7 +89,8 @@ uint64_t row_bytes_for(Packing p, uint64_t cols) noexcept;
 // --- quantizers -------------------------------------------------------------------------------------------
 // Absmean ternarization (BitNet b1.58): gamma = mean |W| over the scale group (double, sequential order),
 // stored as float; q = -1 if W/gamma < -0.5, +1 if W/gamma > 0.5, else 0 (ties go to 0, the even value).
-// gamma == 0 gives all zeros. W is row-major rows x cols; cols must be a multiple of 128.
+// gamma == 0 gives all zeros, and so does a gamma that would be subnormal in float (below FLT_MIN): the group is
+// stored as an exact zero group. W is row-major rows x cols; cols must be a multiple of 128.
 Status quantize_absmean(const float* W, uint64_t rows, uint64_t cols, ScaleMode mode, Packing packing,
                         Tensor& out, const Limits& lim = Limits());
 
@@ -132,7 +133,8 @@ float dot_row(const View& w, uint64_t row, const ActRow& x, Tier tier) noexcept;
 
 // y[r] = dot(row r, x) for every row. Rows go to workers in chunks of 16; each output is written by exactly one
 // worker in a fixed order, so the result does not depend on the thread count. pool may be null (serial).
-// Shapes are checked; on a mismatch y is zero-filled and BadArgument is returned.
+// Shapes are checked; on a mismatch y is zero-filled and BadArgument is returned. If any output overflows to
+// infinity (finite but huge scales), y is zero-filled and NonFinite is returned.
 Status matvec(const View& w, const ActRow& x, float* y, uint64_t y_len, Tier tier, IJobDispatcher* pool);
 
 // FNV-1a 64 over bytes (the format checksum).

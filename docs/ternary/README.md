@@ -25,8 +25,8 @@ under half of Q4_K, and the inner product needs only integer adds.
 ## The math
 
 - Weights: `gamma = mean(|W|)` over the scale group (computed in double, row by row, then stored as float).
-  `q = +1` if `W / gamma > 0.5`, `-1` if `< -0.5`, otherwise 0; an exact tie goes to 0. A group whose gamma is 0
-  is all zeros.
+  `q = +1` if `W / gamma > 0.5`, `-1` if `< -0.5`, otherwise 0; an exact tie goes to 0. A group whose gamma is 0,
+  or would be subnormal in float (below FLT_MIN), is stored as an exact zero group.
 - Scale groups: one gamma for the whole matrix, or one per 128-weight block of each row.
 - Activations, per row: `scale = absmax / 127`, `xq = clamp(round_half_even(x * 127 / absmax), -127, 127)`. The
   rounding is the repo's pinned round-half-to-even routine. A NaN or infinity anywhere gives a "non-finite" error
@@ -79,9 +79,9 @@ The file ends exactly at the end of the codes. The gap between the scales and th
 The parser treats the file as hostile. Before it hands back a view it checks the magic, the version, every field
 against its only allowed value or range, the shape against hard ceilings (2^20 rows and columns, whatever the
 caller asks for) and the caller's limits (rows, columns, total bytes), the exact size of every section, zero
-padding and reserved bytes, the checksum, every scale (finite and not negative), and every weight code. On any
+padding and reserved bytes, the checksum, every scale (finite, not negative, and not subnormal, so no result depends on flush-to-zero settings), and every weight code. On any
 failure it returns an error and an empty view. The kernels never allocate and never read outside the validated
-sections. The matvec checks the shapes it is given and writes zeros if they do not match.
+sections. The matvec checks the shapes it is given and writes zeros if they do not match. If an output overflows float (finite but huge scales), it writes zeros and reports a non-finite error instead of returning infinities.
 
 Threads: rows go to the existing worker pool in chunks of 16, and each output is written by exactly one worker
 in a fixed order, so results do not depend on the number of threads. There are no locks.
