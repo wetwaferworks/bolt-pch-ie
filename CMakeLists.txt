@@ -226,10 +226,20 @@ if(PCHIE_CUDA)
     target_link_libraries(pchie_fork_batching PRIVATE pchie_cuda)
     add_executable(pchie_search_gate tests/pchie_search_gate.cpp)
     target_link_libraries(pchie_search_gate PRIVATE pchie_cuda)
+    # Backend guards on tiny hand-built models (needs a GPU; reports "skipped" without one).
+    add_executable(pchie_cuda_backend_guard_test tests/pchie_cuda_backend_guard_test.cpp)
+    target_link_libraries(pchie_cuda_backend_guard_test PRIVATE pchie_cuda)
+    add_test(NAME pchie_cuda_backend_guard COMMAND pchie_cuda_backend_guard_test)
+    set_tests_properties(pchie_cuda_backend_guard PROPERTIES LABELS cuda)
   else()
     message(STATUS "PCHIE_CUDA: no CUDA compiler found, skipping the CUDA backend")
   endif()
 endif()
+
+# CUDA backend shape limits, checked on the host (no GPU or CUDA compiler needed).
+add_executable(pchie_cuda_limits_test tests/pchie_cuda_limits_test.cpp)
+target_link_libraries(pchie_cuda_limits_test PRIVATE pchie_core)
+add_test(NAME pchie_cuda_limits COMMAND pchie_cuda_limits_test)
 
 # Join-order invariant: deterministic fold by stable work id, plus a shuffle-arrival test.
 add_executable(pchie_join_order_test tests/pchie_join_order_test.cpp)

@@ -1,6 +1,7 @@
 // Bolt PCHIE - CUDA kernels + backend. Built with -fmad=false -prec-div=true -prec-sqrt=true.
 // Each kernel names the CPU routine it mirrors.
 #include "pchie/pchie_cuda.h"
+#include "pchie/pchie_cuda_limits.h"
 #include "pchie/pchie_det_math.h"
 #include "pchie/pchie_kquants_det.h"
 #include <cuda_runtime.h>
@@ -56,7 +57,8 @@ __global__ void k_quant_q8_0(const float* x, BlockQ8_0* q, int nb) {
 }
 
 constexpr int MV_WARPS = 4;
-constexpr int MV_MAXNB = 128;
+constexpr int MV_MAXNB = kCudaMvMaxBlocks;   // init() refuses any weight whose row has more blocks
+static_assert(MV_MAXNB == 128, "shared partial-sum array size");
 
 __device__ __forceinline__ int32_t warp8_sum(int32_t v) {   // exact integer sum over 8-lane groups
     v += __shfl_xor_sync(0xffffffffu, v, 1);
@@ -342,6 +344,22 @@ bool CudaBackend::init(Gemma4Model& model, int gpu_layers, size_t reserve_mb, bo
         }
         I.G = std::min(gpu_layers, C.n_layer);
         if (I.G == 0) { err = "no layers fit in VRAM"; return false; }
+        // Every weight the GPU will run must fit the matvec kernels' fixed shared-memory partial sums.
+        // Refuse here (the caller then runs on the CPU) rather than write past the shared array.
+        {
+            std::string why;
+            auto shape = [&](const QTensor& t, const std::string& name) {
+                if (!cuda_matvec_shape_ok(t.type, t.ne0, t.ne1, &why)) throw std::runtime_error("CUDA backend refuses " + name + ": " + why);
+            };
+            shape(model.ple_proj(), "per_layer_model_proj");
+            if (gpu_lm_head) shape(model.tok_embd(), "token_embd");
+            for (int l = 0; l < I.G; ++l) {
+                const Gemma4Layer& W = model.layer_weights(l); const std::string p = "layer " + std::to_string(l) + " ";
+                shape(W.wq, p + "attn_q"); shape(W.wo, p + "attn_output"); shape(W.gate, p + "ffn_gate"); shape(W.up, p + "ffn_up");
+                shape(W.down, p + "ffn_down"); shape(W.inp_gate, p + "inp_gate"); shape(W.proj, p + "proj");
+                if (l < C.n_layer_kv) { shape(W.wk, p + "attn_k"); shape(W.wv, p + "attn_v"); }
+            }
+        }
         size_t wtot = qbytes(model.ple_proj()) + 4 * 1024 * 1024;
         for (int l = 0; l < I.G; ++l) wtot += lb[size_t(l)];
         if (gpu_lm_head) wtot += size_t(C.n_vocab) * C.d_model / 32 * 34 + 4096;
