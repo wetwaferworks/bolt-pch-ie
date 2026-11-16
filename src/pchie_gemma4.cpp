@@ -300,6 +300,12 @@ bool Gemma4Model::load(const std::string& path, std::string& err) {
         cfg_.eps = float(N("attention.layer_norm_rms_epsilon"));
         cfg_.rope_base = float(N("rope.freq_base")); cfg_.rope_base_swa = float(N("rope.freq_base_swa"));
         cfg_.softcap = float(N("final_logit_softcapping"));
+        // rmsnorm divides by sqrt(mean + eps), the head by softcap, and the rope table raises the bases to a
+        // power: each must be a finite positive float, or the model would produce NaN or inf instead of an error.
+        auto positive = [](float v) { return std::isfinite(v) && v > 0.0f; };
+        if (!positive(cfg_.eps)) throw std::runtime_error("gemma4.attention.layer_norm_rms_epsilon must be finite and > 0");
+        if (!positive(cfg_.softcap)) throw std::runtime_error("gemma4.final_logit_softcapping must be finite and > 0");
+        if (!positive(cfg_.rope_base) || !positive(cfg_.rope_base_swa)) throw std::runtime_error("gemma4 rope.freq_base must be finite and > 0");
         if (I("attention.value_length", 1, 4096) != cfg_.hd_global || I("attention.value_length_swa", 1, 4096) != cfg_.hd_swa)
             throw std::runtime_error("value_length != key_length is not supported");
     } catch (const std::exception& e) { err = e.what(); return false; }
@@ -360,6 +366,11 @@ bool Gemma4Model::load(const std::string& path, std::string& err) {
         ple_proj_norm_ = F("per_layer_proj_norm.weight", uint64_t(cfg_.d_ple));
         out_norm_ = F("output_norm.weight", uint64_t(cfg_.d_model));
         rope_freqs_ = F("rope_freqs.weight", uint64_t(cfg_.n_rot_global / 2));
+        // The rope table divides each angle by its frequency factor.
+        for (int i = 0; i < cfg_.n_rot_global / 2; ++i) {
+            float f; std::memcpy(&f, rope_freqs_ + i, sizeof f);
+            if (!(std::isfinite(f) && f > 0.0f)) throw std::runtime_error("rope_freqs.weight entries must be finite and > 0");
+        }
         layers_.resize(size_t(cfg_.n_layer));
         for (int l = 0; l < cfg_.n_layer; ++l) {
             auto& L = layers_[size_t(l)];

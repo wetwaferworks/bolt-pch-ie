@@ -6,6 +6,7 @@
 #include "pchie/pchie_kquants_det.h"
 #include "pchie_tiny_gguf.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -91,6 +92,21 @@ int main() {
         std::vector<uint16_t> w(12, 0x3F80);          // 1.0 in BF16
         std::vector<float> x(12, 1.0f);
         check(dot_bf16_f32(w.data(), x.data(), 12) == 12.0f, "dot_bf16_f32 on a 12-wide row sums exactly 12 elements");
+    }
+    // Scalars that divide or are raised to a power must be finite and positive (no NaN logits from a bad file).
+    const double nan = std::nan("");
+    for (const auto& kv : std::vector<std::pair<const char*, double>>{
+             {"attention.layer_norm_rms_epsilon", 0.0}, {"attention.layer_norm_rms_epsilon", -1e-6}, {"attention.layer_norm_rms_epsilon", nan},
+             {"final_logit_softcapping", 0.0}, {"final_logit_softcapping", -30.0}, {"final_logit_softcapping", nan}, {"final_logit_softcapping", 1e300},
+             {"rope.freq_base", 0.0}, {"rope.freq_base", -10000.0}, {"rope.freq_base_swa", nan}, {"rope.freq_base_swa", HUGE_VAL}}) {
+        Model m = good_model(); m.set(std::string("gemma4.") + kv.first, kv.second);
+        char label[160]; std::snprintf(label, sizeof label, "%s = %g is refused", kv.first, kv.second);
+        refused(m, "bad_scalar", label);
+    }
+    for (float f : {0.0f, -1.0f, std::nanf(""), HUGE_VALF}) {
+        Model m = good_model(); m.find("rope_freqs.weight")->fill = f;
+        char label[160]; std::snprintf(label, sizeof label, "rope_freqs.weight holding %g is refused", double(f));
+        refused(m, "bad_freq", label);
     }
     std::printf("[G4LOAD] %d PASS / %d FAIL\n", passes, fails);
     return fails ? 1 : 0;
