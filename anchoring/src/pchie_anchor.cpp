@@ -56,7 +56,7 @@ static Bytes sign_persist(const fs::path& keyp, const std::string& text) {
   Bytes sig = k.sign(Bytes(text.begin(), text.end())); k.wipe();
   return sig;
 }
-static void keygen(const fs::path& dir, const std::string& label) { HbsKey k = HbsKey::generate(label); save_key(dir / "signing.key", k); spit(dir / "public.key", hex(k.pub()) + "\n"); }
+static void keygen(const fs::path& dir, const std::string& label) { HbsKey k = HbsKey::generate(label); save_key(dir / "signing.key", k); spit(dir / "public.key", hex(k.pub()) + "\n"); k.wipe(); }
 
 struct Log {
   fs::path d; std::vector<std::string> recs; std::vector<H32> L; std::string log_id;

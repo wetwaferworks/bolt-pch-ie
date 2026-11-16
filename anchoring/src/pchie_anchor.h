@@ -132,6 +132,13 @@ struct HbsKey {
   }
   // Zero the secret seed once a key copy is no longer needed.
   void wipe() { secure_zero(seed.data(), seed.size()); }
+  // Every copy wipes its own seed when it goes away, on exception paths too.
+  HbsKey() = default;
+  HbsKey(const HbsKey&) = default;
+  HbsKey(HbsKey&&) = default;
+  HbsKey& operator=(const HbsKey&) = default;
+  HbsKey& operator=(HbsKey&&) = default;
+  ~HbsKey() { wipe(); }
   static HbsKey from_seed(const Bytes& I, const H32& seed, uint32_t next_q) { HbsKey k; k.I = I; k.seed = seed; k.next_q = next_q; k.build(); return k; }
   // stateful: every signature consumes one leaf; the caller must persist next_q BEFORE releasing the signature
   Bytes sign(const Bytes& msg) {
