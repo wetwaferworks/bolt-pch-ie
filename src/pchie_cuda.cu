@@ -6,6 +6,7 @@
 #include "pchie/pchie_kquants_det.h"
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -282,6 +283,10 @@ struct CudaBackend::Impl {
     uint32_t *d_t = nullptr, *d_j0 = nullptr;
     std::vector<bool> host_kv;   // GPU-owned layer whose KV a CPU layer reads
     std::vector<void*> allocs;
+    // Set (and never cleared) when a mirrored copy-on-write page copy fails on the GPU; forward_batch then
+    // refuses to run, because the GPU KV arena no longer matches the host page tables.
+    std::atomic<bool> copy_failed{false};
+    bool hooks_set = false;       // this backend installed the pools' on_copy hooks
 
     template <class T> T* dalloc(size_t n) { void* p; CK(cudaMalloc(&p, n * sizeof(T))); allocs.push_back(p); vram += n * sizeof(T); return static_cast<T*>(p); }
     DevT up_tensor(const QTensor& t) {
@@ -313,7 +318,13 @@ struct CudaBackend::Impl {
 };
 
 CudaBackend::CudaBackend() : p_(new Impl) {}
-CudaBackend::~CudaBackend() { if (p_) for (void* a : p_->allocs) cudaFree(a); }
+CudaBackend::~CudaBackend() {
+    if (!p_) return;
+    // The KV pools belong to the model and outlive this backend: unhook the mirror copies first, so a later
+    // copy-on-write on the CPU path never calls cudaMemcpy on freed device memory.
+    if (p_->hooks_set && p_->m) { p_->m->pool_swa().on_copy = nullptr; p_->m->pool_glob().on_copy = nullptr; }
+    for (void* a : p_->allocs) cudaFree(a);
+}
 int CudaBackend::gpu_layers() const { return p_->G; }
 size_t CudaBackend::vram_bytes() const { return p_->vram; }
 
@@ -382,8 +393,14 @@ bool CudaBackend::init(Gemma4Model& model, int gpu_layers, size_t reserve_mb, bo
         I.arena_swa = I.dalloc<float>(ps.max_pages() * ps.page_floats());
         I.arena_glob = I.dalloc<float>(pgl.max_pages() * pgl.page_floats());
         float* as = I.arena_swa; float* ag = I.arena_glob; size_t fs = ps.page_floats(), fg = pgl.page_floats();
-        ps.on_copy = [as, fs](int32_t s, int32_t d) { cudaMemcpy(as + size_t(d) * fs, as + size_t(s) * fs, fs * 4, cudaMemcpyDeviceToDevice); };
-        pgl.on_copy = [ag, fg](int32_t s, int32_t d) { cudaMemcpy(ag + size_t(d) * fg, ag + size_t(s) * fg, fg * 4, cudaMemcpyDeviceToDevice); };
+        std::atomic<bool>* bad = &I.copy_failed;
+        ps.on_copy = [as, fs, bad](int32_t s, int32_t d) {
+            if (cudaMemcpy(as + size_t(d) * fs, as + size_t(s) * fs, fs * 4, cudaMemcpyDeviceToDevice) != cudaSuccess) bad->store(true);
+        };
+        pgl.on_copy = [ag, fg, bad](int32_t s, int32_t d) {
+            if (cudaMemcpy(ag + size_t(d) * fg, ag + size_t(s) * fg, fg * 4, cudaMemcpyDeviceToDevice) != cudaSuccess) bad->store(true);
+        };
+        I.hooks_set = true;
         // Scratch is sized from the widest head and the widest matvec input any layer uses (not only the
         // global head and d_ff), so an unusual but accepted config cannot write past a buffer.
         const CudaScratchDims SD = cuda_scratch_dims(C);
@@ -413,6 +430,7 @@ void CudaBackend::forward(Gemma4Model::Branch& br, int32_t token, std::vector<fl
 void CudaBackend::forward_batch(Gemma4Model::Branch* const* bs, const int32_t* toks, int B, std::vector<float>* logits, ThreadPool& pool) {
     Impl& I = *p_; Gemma4Model& M = *I.m; const Gemma4Config& C = M.cfg();
     if (B > I.maxB) throw std::runtime_error("CudaBackend: batch larger than max_batch");
+    if (I.copy_failed.load()) throw std::runtime_error("CudaBackend: a GPU copy-on-write page copy failed; the GPU KV cache is no longer valid");
     const int D = C.d_model, P = C.d_ple, NL = C.n_layer, HQ = C.n_head, HKV = C.n_head_kv, NP = NL * P;
     std::vector<float> x(static_cast<size_t>(D) * B), ple(static_cast<size_t>(NP) * B);
     for (int b = 0; b < B; ++b) { M.begin_token(*bs[b]); M.embed(toks[b], &x[size_t(b) * D], &ple[size_t(b) * NP]); }
@@ -440,6 +458,7 @@ void CudaBackend::forward_batch(Gemma4Model::Branch* const* bs, const int32_t* t
         Gemma4Model::rope_table(C.n_rot_swa, C.rope_base_swa, nullptr, t, &cs[size_t(b) * 2048], &cs[size_t(b) * 2048 + 512]);
         Gemma4Model::rope_table(C.n_rot_global, C.rope_base, M.rope_freqs(), t, &cs[size_t(b) * 2048 + 1024], &cs[size_t(b) * 2048 + 1536]);
     }
+    if (I.copy_failed.load()) throw std::runtime_error("CudaBackend: a GPU copy-on-write page copy failed; the GPU KV cache is no longer valid");
     CK(cudaMemcpy(I.pt_swa, pts.data(), pts.size() * 4, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(I.pt_glob, ptg.data(), ptg.size() * 4, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(I.d_t, ts.data(), ts.size() * 4, cudaMemcpyHostToDevice));
@@ -495,6 +514,7 @@ void CudaBackend::forward_batch(Gemma4Model::Branch* const* bs, const int32_t* t
         k_add_scale<<<Impl::nblk(B * D), 256>>>(I.x, I.pg2, W.out_scale, B * D);
     }
     CK(cudaGetLastError());
+    if (I.copy_failed.load()) throw std::runtime_error("CudaBackend: a GPU copy-on-write page copy failed; the GPU KV cache is no longer valid");
     if (I.G < NL) {
         CK(cudaMemcpy(x.data(), I.x, x.size() * 4, cudaMemcpyDeviceToHost));
         CK(cudaMemcpy(ple.data(), I.ple, ple.size() * 4, cudaMemcpyDeviceToHost));

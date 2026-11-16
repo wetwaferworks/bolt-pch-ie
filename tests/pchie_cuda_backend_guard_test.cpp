@@ -2,7 +2,7 @@
 // A well-formed tiny model initialises; a model with a Q8_0 row wider than the matvec's shared partial-sum
 // array is refused at init with an error instead of being launched. A model whose sliding head is wider than
 // its global head runs on the GPU with the same logits as the CPU (run under compute-sanitizer to see any
-// write past a scratch buffer).
+// write past a scratch buffer). Destroying the backend unhooks its copy-on-write mirror from the model.
 #include "pchie/pchie_cuda.h"
 #include "pchie/pchie_gemma4.h"
 #include "pchie_tiny_gguf.h"
@@ -91,6 +91,28 @@ int main() {
         }), "a model whose sliding head is wider than its global head loads");
         check(ran, "the GPU runs three tokens on it with no CUDA error");
         check(same, "GPU logits equal the CPU logits on it");
+    }
+    {   // The KV pools belong to the model and outlive the backend. Once the backend is gone, a copy-on-write on
+        // the CPU path must not call its mirror copy (that would cudaMemcpy into freed device memory).
+        bool hooked = false, unhooked = false, cpu_ok = false;
+        check(with_model(good_model(), "lifetime", [&](Gemma4Model& g) {
+            {
+                CudaBackend cb; std::string err;
+                if (!cb.init(g, -1, 0, false, err)) { std::printf("           init error: %s\n", err.c_str()); return; }
+                hooked = bool(g.pool_swa().on_copy) && bool(g.pool_glob().on_copy);
+            }
+            unhooked = !g.pool_swa().on_copy && !g.pool_glob().on_copy;
+            ThreadPool pool(1);
+            Gemma4Model::Branch a = g.new_branch(); std::vector<float> lg;
+            g.forward(a, 2, lg, pool);
+            Gemma4Model::Branch b = g.fork(a);       // shares a's page
+            g.forward(b, 3, lg, pool);               // first write into the shared page: copy-on-write
+            cpu_ok = g.pool_glob().cow_copies() + g.pool_swa().cow_copies() > 0 && lg.size() == 4;
+            g.release(b); g.release(a);
+        }), "the tiny model loads (backend lifetime)");
+        check(hooked, "a live backend mirrors copy-on-write page copies to the GPU");
+        check(unhooked, "destroying the backend removes its copy hooks from the model's KV pools");
+        check(cpu_ok, "a CPU copy-on-write after the backend is gone runs without touching the GPU");
     }
     std::printf("[CUDAGUARD] %d PASS / %d FAIL\n", passes, fails);
     return fails ? 1 : 0;
