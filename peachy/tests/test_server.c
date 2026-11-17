@@ -6,6 +6,7 @@
 #include "pj_platform.h"
 
 void pj_test_fail_audit_after(PeachySession* s, uint64_t record);
+void pj_test_audit_body_cap(PeachySession* s, size_t cap);
 const char* pj_test_audit_path(PeachySession* s);
 
 static const peachy_api* A;
@@ -530,6 +531,22 @@ static void holds(void) {
   A->status(s, &st);
   CHECK(st.held && has(st.hold_reason, "audit"), "audit write failure holds");
   CHECK(A->console(s, "resume", rep, sizeof(rep)) == PEACHY_E_HELD && has(rep, "audit"), "no resume without the audit log");
+  A->session_close(s);
+  pt_client_clear(&cl);
+  /* a record too large for its buffer holds the session instead of being skipped, and resume stays refused
+   * because the log now has a gap (review 2026-11-16, L6) */
+  CHECK(open_s(&c, &s, err) == PEACHY_OK, "open for an oversized audit record");
+  if (!s) return;
+  rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
+  A->status(s, &st);
+  CHECK(!st.held, "not held before the record cap shrinks");
+  pj_test_audit_body_cap(s, 16);
+  rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}");
+  pj_test_audit_body_cap(s, 4096);
+  A->status(s, &st);
+  CHECK(st.held && has(st.hold_reason, "audit"), "an oversized audit record holds");
+  CHECK(A->console(s, "resume", rep, sizeof(rep)) == PEACHY_E_HELD && has(rep, "record was lost"),
+        "no resume after an audit record was lost");
   A->session_close(s);
   pt_client_clear(&cl);
   /* output failure holds */

@@ -88,6 +88,8 @@ struct PeachySession {
   char* out;
   char* tmp;
   char* abody;
+  size_t abody_cap;   /* PJ_AUDIT_BODY_CAP; tests may lower it */
+  int audit_lost;     /* a record was too large to write: the log has a gap, so the session can't resume */
   pj_audit audit;
   uint64_t bucket, bucket_t;
   uint64_t mbucket, mbucket_t; /* every inbound message, PJ_MSG_RATE per second, PJ_MSG_BURST burst */
@@ -154,6 +156,22 @@ static void audit_body(PeachySession* s, const char* body, size_t len) {
   }
 }
 
+/* Writes the record built in w. A record that overflowed its buffer is never dropped quietly: the session holds
+ * as an audit failure and can't be resumed, since the log now has a gap. This doesn't go through enter_hold,
+ * which writes a record of its own and could overflow again. */
+static void audit_w(PeachySession* s, const pj_w* w) {
+  if (!w->overflow) {
+    audit_body(s, w->p, w->len);
+    return;
+  }
+  s->audit_lost = 1;
+  if (s->hold_code != H_AUDIT) {
+    s->held = 1;
+    s->hold_code = H_AUDIT;
+    say(s, 2, "peachy: an audit record was too large to write; session held");
+  }
+}
+
 static void w_who(pj_w* w, PeachySession* s) {
   pj_w_cstr(w, "\"session\":");
   pj_w_cjstr(w, s->session_name);
@@ -163,7 +181,7 @@ static void w_who(pj_w* w, PeachySession* s) {
 
 static void audit_simple(PeachySession* s, const char* dir, const char* what, const char* reason) {
   pj_w w;
-  pj_w_init(&w, s->abody, PJ_AUDIT_BODY_CAP);
+  pj_w_init(&w, s->abody, s->abody_cap);
   w_who(&w, s);
   pj_w_cstr(&w, ",\"dir\":");
   pj_w_cjstr(&w, dir);
@@ -171,20 +189,20 @@ static void audit_simple(PeachySession* s, const char* dir, const char* what, co
   pj_w_cjstr(&w, what);
   pj_w_cstr(&w, ",\"reason\":");
   pj_w_cjstr(&w, reason);
-  if (!w.overflow) audit_body(s, w.p, w.len);
+  audit_w(s, &w);
 }
 
 static void game_audit(void* ctx, int outbound, const char* tool, const uint8_t sha[32], int ok) {
   PeachySession* s = (PeachySession*)ctx;
   pj_w w;
-  pj_w_init(&w, s->abody, PJ_AUDIT_BODY_CAP);
+  pj_w_init(&w, s->abody, s->abody_cap);
   w_who(&w, s);
   pj_w_cstr(&w, outbound ? ",\"dir\":\"game_out\",\"tool\":" : ",\"dir\":\"game_in\",\"tool\":");
   pj_w_cjstr(&w, tool);
   pj_w_cstr(&w, ",\"sha256\":\"");
   pj_w_hex(&w, sha, 32);
   pj_w_cstr(&w, ok ? "\",\"verdict\":\"ok\"" : "\",\"verdict\":\"failed\"");
-  if (!w.overflow) audit_body(s, w.p, w.len);
+  audit_w(s, &w);
 }
 
 static void enter_hold(PeachySession* s, uint32_t code) {
@@ -211,12 +229,12 @@ static void emit(PeachySession* s, const char* msg, size_t len) {
   else ok = s->write && s->write(s->write_ctx, msg, len) == 0;
   ++s->n_out;
   pj_sha256_once(msg, len, h);
-  pj_w_init(&w, s->abody, PJ_AUDIT_BODY_CAP);
+  pj_w_init(&w, s->abody, s->abody_cap);
   w_who(&w, s);
   pj_w_cstr(&w, ",\"dir\":\"out\",\"reply_sha256\":\"");
   pj_w_hex(&w, h, 32);
   pj_w_cstr(&w, ok ? "\",\"verdict\":\"sent\"" : "\",\"verdict\":\"not delivered\"");
-  if (!w.overflow) audit_body(s, w.p, w.len);
+  audit_w(s, &w);
   if (!ok) enter_hold(s, H_OUTPUT);
 }
 
@@ -702,7 +720,7 @@ static int planner_choice(PeachySession* s, uint32_t* action, uint64_t* record) 
   s->plan_tick = s->obs_tick;
   s->plan_action = *action;
   pj_sha256_once(text, len, h);
-  pj_w_init(&w, s->abody, PJ_AUDIT_BODY_CAP);
+  pj_w_init(&w, s->abody, s->abody_cap);
   w_who(&w, s);
   pj_w_cstr(&w, ",\"dir\":\"decide\",\"what\":\"plan\",\"label\":\"scratch\",\"via\":");
   pj_w_cstr(&w, via_json(s));
@@ -712,7 +730,7 @@ static int planner_choice(PeachySession* s, uint32_t* action, uint64_t* record) 
   pj_w_hex(&w, h, 32);
   pj_w_cstr(&w, "\",\"action\":");
   pj_w_cjstr(&w, action_name(*action));
-  if (!w.overflow) audit_body(s, w.p, w.len);
+  audit_w(s, &w);
   *record = s->audit.seq;
   return 0;
 }
@@ -760,7 +778,7 @@ typedef struct pact {
 
 static void record_check(PeachySession* s, uint64_t pid, int step, const char* verdict, const char* reason) {
   pj_w w;
-  pj_w_init(&w, s->abody, PJ_AUDIT_BODY_CAP);
+  pj_w_init(&w, s->abody, s->abody_cap);
   w_who(&w, s);
   pj_w_cstr(&w, ",\"dir\":\"check\",\"proposal\":");
   pj_w_u64(&w, pid);
@@ -770,7 +788,7 @@ static void record_check(PeachySession* s, uint64_t pid, int step, const char* v
   pj_w_cjstr(&w, verdict);
   pj_w_cstr(&w, ",\"reason\":");
   pj_w_cjstr(&w, reason);
-  if (!w.overflow) audit_body(s, w.p, w.len);
+  audit_w(s, &w);
 }
 
 static const char* const turn_names[3] = {"left", "right", "around"};
@@ -779,7 +797,7 @@ static void finish_proposal(PeachySession* s, const rpc_id* id, pj_prop* p, cons
   pj_w w;
   int k;
   /* The decision record holds only the validated, canonical actions: no outside text ever enters the log. */
-  pj_w_init(&w, s->abody, PJ_AUDIT_BODY_CAP);
+  pj_w_init(&w, s->abody, s->abody_cap);
   w_who(&w, s);
   pj_w_cstr(&w, ",\"dir\":\"decide\",\"proposal\":");
   pj_w_u64(&w, p->id);
@@ -805,7 +823,7 @@ static void finish_proposal(PeachySession* s, const rpc_id* id, pj_prop* p, cons
     }
   }
   pj_w_cstr(&w, "]");
-  if (!w.overflow) audit_body(s, w.p, w.len);
+  audit_w(s, &w);
 
   pj_w_init(&w, s->tmp, PJ_TMP_CAP);
   pj_w_cstr(&w, "{\"id\":");
@@ -1038,7 +1056,7 @@ static void tool_hold(PeachySession* s, const rpc_id* id) {
 static void audit_in(PeachySession* s, const uint8_t sha[32], const char* method, const char* tool, const char* verdict,
                      const char* reason) {
   pj_w w;
-  pj_w_init(&w, s->abody, PJ_AUDIT_BODY_CAP);
+  pj_w_init(&w, s->abody, s->abody_cap);
   w_who(&w, s);
   pj_w_cstr(&w, ",\"dir\":\"in\",\"method\":");
   pj_w_cjstr(&w, method);
@@ -1050,7 +1068,7 @@ static void audit_in(PeachySession* s, const uint8_t sha[32], const char* method
   pj_w_cjstr(&w, verdict);
   pj_w_cstr(&w, ",\"reason\":");
   pj_w_cjstr(&w, reason);
-  if (!w.overflow) audit_body(s, w.p, w.len);
+  audit_w(s, &w);
 }
 
 /* Only these names ever reach the log; anything else is written as [other]. */
@@ -1505,6 +1523,7 @@ static peachy_status PEACHY_CALL api_session_open(const peachy_session_config* c
   s->out = (char*)pj_arena_alloc(&s->arena, PJ_OUT_CAP);
   s->tmp = (char*)pj_arena_alloc(&s->arena, PJ_TMP_CAP);
   s->abody = (char*)pj_arena_alloc(&s->arena, PJ_AUDIT_BODY_CAP);
+  s->abody_cap = PJ_AUDIT_BODY_CAP;
   s->props = (pj_prop*)pj_arena_alloc(&s->arena, sizeof(pj_prop) * PJ_PROPOSALS);
   if (!s->in_buf || !s->scratch || !s->out || !s->tmp || !s->abody || !s->props)
     return open_fail(s, err, err_cap, "arena too small for these limits", PEACHY_E_NO_MEMORY);
@@ -1671,6 +1690,10 @@ static peachy_status console_resume(PeachySession* s, pj_w* w) {
     pj_w_cstr(w, "cannot resume: the audit log is not writable");
     return PEACHY_E_HELD;
   }
+  if (s->audit_lost) {
+    pj_w_cstr(w, "cannot resume: an audit record was lost; start a new session");
+    return PEACHY_E_HELD;
+  }
   if (s->cut_off) {
     pj_w_cstr(w, "cannot resume: the client was cut off; start a new session");
     return PEACHY_E_HELD;
@@ -1834,3 +1857,6 @@ void pj_test_fail_audit_after(PeachySession* s, uint64_t record) {
   if (live(s)) s->audit.fail_after = record;
 }
 const char* pj_test_audit_path(PeachySession* s) { return live(s) ? s->audit.path : ""; }
+void pj_test_audit_body_cap(PeachySession* s, size_t cap) {
+  if (live(s) && cap > 0 && cap <= PJ_AUDIT_BODY_CAP) s->abody_cap = cap;
+}
