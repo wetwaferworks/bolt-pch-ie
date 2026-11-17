@@ -5,9 +5,15 @@
 // number of values in the document all have ceilings, checked while reading. The defaults match the game's
 // own 16 MiB line cap, so every reply that parsed before still parses. A caller may pass tighter Limits;
 // values looser than the defaults are clamped to them. Duplicate keys can be refused on request.
+// Memory capped too (2026-11-17): every string and container buffer the parse allocates is charged against a
+// byte budget (64 MiB by default) before it is allocated, and nothing is refunded, so the charge is an upper bound
+// on what the parse ever holds. Before this a 16 MiB line of empty arrays peaked at 427 MiB before the value cap
+// refused it. Buffers grow by doubling under our own reserve calls, so the charge doesn't depend on the standard
+// library's growth policy. The duplicate-key check sorts once per object (n log n), not pairwise.
 // Not on the official chain; nothing here is hashed.
 #pragma once
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <cstdlib>
@@ -33,6 +39,7 @@ class MiniJson final {
   static constexpr size_t kMaxStringBytes = size_t(16) << 20;  // one decoded string
   static constexpr size_t kMaxItems = size_t(1) << 20;         // entries in one array or object
   static constexpr size_t kMaxValues = size_t(4) << 20;        // values in the whole document
+  static constexpr size_t kMaxMemoryBytes = size_t(64) << 20;  // heap the parse may allocate, all buffers
 
   // Ceilings for one parse. Zero, or anything above the matching kMax*, means the kMax* default.
   struct Limits {
@@ -41,6 +48,7 @@ class MiniJson final {
     size_t max_string_bytes = kMaxStringBytes;
     size_t max_items = kMaxItems;
     size_t max_values = kMaxValues;
+    size_t max_memory_bytes = kMaxMemoryBytes;
     bool reject_duplicate_keys = false;
   };
 
@@ -114,7 +122,78 @@ class MiniJson final {
   struct Ctx {
     Limits lim;
     size_t values = 0;
+    size_t mem = 0;  // bytes charged so far; never above lim.max_memory_bytes
   };
+
+  // Charges `bytes` that are about to be allocated. False (with err set) if that would cross the ceiling.
+  static bool charge(Ctx& cx, size_t bytes, std::string& err) {
+    if (bytes > cx.lim.max_memory_bytes - cx.mem) {
+      err = "json: memory ceiling";
+      return false;
+    }
+    cx.mem += bytes;
+    return true;
+  }
+
+  // Makes room for one more element, doubling under our own reserve so the charge is exact. The item cap is
+  // checked before this, so size() < max_items and the new capacity is always larger than the old one.
+  template <class V>
+  static bool room_for_one(V& v, Ctx& cx, std::string& err) {
+    if (v.size() < v.capacity()) return true;
+    size_t ncap = v.capacity() ? v.capacity() * 2 : 4;
+    if (ncap > cx.lim.max_items) ncap = cx.lim.max_items;
+    if (ncap <= v.size()) ncap = v.size() + 1;
+    const size_t es = sizeof(typename V::value_type);
+    if (ncap > (cx.lim.max_memory_bytes - cx.mem) / es) {
+      err = "json: memory ceiling";
+      return false;
+    }
+    cx.mem += ncap * es;
+    v.reserve(ncap);
+    return true;
+  }
+
+  // Makes room for up to 4 more bytes in a string being decoded (one UTF-8 sequence).
+  static bool room_for_bytes(std::string& o, Ctx& cx, std::string& err) {
+    if (o.size() + 4 <= o.capacity()) return true;
+    size_t ncap = o.capacity() * 2;
+    if (ncap < 32) ncap = 32;
+    if (ncap > cx.lim.max_string_bytes + 8) ncap = cx.lim.max_string_bytes + 8;
+    if (ncap < o.size() + 4) ncap = o.size() + 4;
+    if (!charge(cx, ncap + 1, err)) return false;
+    o.reserve(ncap);
+    return true;
+  }
+
+  // Duplicate keys in one finished object. Small objects compare pairwise; larger ones sort pointers to the
+  // keys once, so the whole document costs n log n, never n^2. The pointer array is freed before anything else
+  // allocates, so it is checked against the ceiling but not kept in the charge.
+  static bool has_duplicate_key(const MiniJson& v, Ctx& cx, std::string& err) {
+    const size_t n = v.obj.size();
+    if (n <= 16) {
+      for (size_t a = 0; a < n; ++a)
+        for (size_t b = a + 1; b < n; ++b)
+          if (v.obj[a].first == v.obj[b].first) {
+            err = "json: duplicate key";
+            return true;
+          }
+      return false;
+    }
+    if (n > (cx.lim.max_memory_bytes - cx.mem) / sizeof(const std::string*)) {
+      err = "json: memory ceiling";
+      return true;
+    }
+    std::vector<const std::string*> keys;
+    keys.reserve(n);
+    for (const auto& kv : v.obj) keys.push_back(&kv.first);
+    std::sort(keys.begin(), keys.end(), [](const std::string* a, const std::string* b) { return *a < *b; });
+    for (size_t k = 1; k < n; ++k)
+      if (*keys[k - 1] == *keys[k]) {
+        err = "json: duplicate key";
+        return true;
+      }
+    return false;
+  }
 
   static Limits clamp(const Limits& r) {
     Limits l = r;
@@ -123,6 +202,7 @@ class MiniJson final {
     if (l.max_string_bytes == 0 || l.max_string_bytes > kMaxStringBytes) l.max_string_bytes = kMaxStringBytes;
     if (l.max_items == 0 || l.max_items > kMaxItems) l.max_items = kMaxItems;
     if (l.max_values == 0 || l.max_values > kMaxValues) l.max_values = kMaxValues;
+    if (l.max_memory_bytes == 0 || l.max_memory_bytes > kMaxMemoryBytes) l.max_memory_bytes = kMaxMemoryBytes;
     return l;
   }
 
@@ -173,7 +253,7 @@ class MiniJson final {
     return true;
   }
 
-  static bool string_lit(const std::string& s, size_t& i, std::string& o, std::string& err, size_t max_len) {
+  static bool string_lit(const std::string& s, size_t& i, std::string& o, std::string& err, size_t max_len, Ctx& cx) {
     if (i >= s.size() || s[i] != '"') {
       err = "json: expected string";
       return false;
@@ -197,6 +277,7 @@ class MiniJson final {
         err = "json: raw control character in string";
         return false;
       }
+      if (!room_for_bytes(o, cx, err)) return false;
       if (c != '\\') {
         o += c;
         continue;
@@ -280,13 +361,7 @@ class MiniJson final {
           return false;
         }
         std::string key;
-        if (!string_lit(s, i, key, err, cx.lim.max_string_bytes)) return false;
-        if (cx.lim.reject_duplicate_keys)
-          for (const auto& kv : v.obj)
-            if (kv.first == key) {
-              err = "json: duplicate key";
-              return false;
-            }
+        if (!string_lit(s, i, key, err, cx.lim.max_string_bytes, cx)) return false;
         skip_ws(s, i);
         if (i >= s.size() || s[i] != ':') {
           err = "json: expected ':'";
@@ -295,6 +370,7 @@ class MiniJson final {
         ++i;
         MiniJson child;
         if (!value(s, i, child, depth + 1, err, cx)) return false;
+        if (!room_for_one(v.obj, cx, err)) return false;
         v.obj.emplace_back(std::move(key), std::move(child));
         skip_ws(s, i);
         if (i < s.size() && s[i] == ',') {
@@ -303,7 +379,7 @@ class MiniJson final {
         }
         if (i < s.size() && s[i] == '}') {
           ++i;
-          return true;
+          return !(cx.lim.reject_duplicate_keys && has_duplicate_key(v, cx, err));
         }
         err = "json: expected ',' or '}'";
         return false;
@@ -324,6 +400,7 @@ class MiniJson final {
         }
         MiniJson child;
         if (!value(s, i, child, depth + 1, err, cx)) return false;
+        if (!room_for_one(v.arr, cx, err)) return false;
         v.arr.push_back(std::move(child));
         skip_ws(s, i);
         if (i < s.size() && s[i] == ',') {
@@ -340,7 +417,7 @@ class MiniJson final {
     }
     if (c == '"') {
       v.type = Type::String;
-      return string_lit(s, i, v.str, err, cx.lim.max_string_bytes);
+      return string_lit(s, i, v.str, err, cx.lim.max_string_bytes, cx);
     }
     if (lit(s, i, "true")) {
       v.type = Type::Bool;
@@ -362,25 +439,26 @@ class MiniJson final {
       while (j < s.size() && ((s[j] >= '0' && s[j] <= '9') || s[j] == '.' || s[j] == 'e' ||
                               s[j] == 'E' || s[j] == '+' || s[j] == '-'))
         ++j;
-      const std::string num = s.substr(i, j - i);
+      const char* num = s.data() + i;  // read in place: a long number token must not cost a heap copy
+      const size_t num_len = j - i;
       v.type = Type::Number;
       // RFC 8259 number grammar, parsed without the C locale: -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?
       size_t k = 0;
-      auto digits = [&]() { const size_t s0 = k; while (k < num.size() && num[k] >= '0' && num[k] <= '9') ++k; return k - s0; };
+      auto digits = [&]() { const size_t s0 = k; while (k < num_len && num[k] >= '0' && num[k] <= '9') ++k; return k - s0; };
       bool good = true;
-      if (k < num.size() && num[k] == '-') ++k;
-      if (k < num.size() && num[k] == '0') ++k;
+      if (k < num_len && num[k] == '-') ++k;
+      if (k < num_len && num[k] == '0') ++k;
       else good = digits() > 0;
-      if (good && k < num.size() && num[k] == '.') { ++k; good = digits() > 0; }
-      if (good && k < num.size() && (num[k] == 'e' || num[k] == 'E')) {
+      if (good && k < num_len && num[k] == '.') { ++k; good = digits() > 0; }
+      if (good && k < num_len && (num[k] == 'e' || num[k] == 'E')) {
         ++k;
-        if (k < num.size() && (num[k] == '+' || num[k] == '-')) ++k;
+        if (k < num_len && (num[k] == '+' || num[k] == '-')) ++k;
         good = digits() > 0;
       }
-      good = good && k == num.size();
+      good = good && k == num_len;
       if (good) {
-        const auto r = std::from_chars(num.data(), num.data() + num.size(), v.number);
-        good = r.ec == std::errc() && r.ptr == num.data() + num.size();
+        const auto r = std::from_chars(num, num + num_len, v.number);
+        good = r.ec == std::errc() && r.ptr == num + num_len;
       }
       if (!good) {
         err = "json: bad number";

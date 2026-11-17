@@ -6,8 +6,13 @@
 //   - Duplicate keys parse by default (old behavior) and are refused when asked.
 //   - A refused parse leaves a short error and never crashes; the MCP shapes that parsed before still parse.
 //   - Nothing here touches any chain or hash.
+//   - (2026-11-17) Memory: every buffer the parse allocates is charged before it is allocated. A 16 MiB line of
+//     empty arrays is refused at the 64 MiB ceiling, not after 427 MiB. Tighter budgets work at their edge, a
+//     looser one is clamped, and long number tokens cost no copy. A big object with duplicate refusal on is
+//     checked in n log n.
 #include "pchie/MiniJson.h"
 
+#include <chrono>
 #include <cstdio>
 #include <string>
 
@@ -124,6 +129,76 @@ int main() {
 
   // Big but legal: a 1 MiB string inside the default caps.
   check(ok("\"" + std::string(size_t(1) << 20, 'a') + "\"", def), "default: a 1 MiB string still parses");
+
+  // Memory ceiling (review 2026-11-16, M4).
+  check(def.max_memory_bytes == MiniJson::kMaxMemoryBytes && MiniJson::kMaxMemoryBytes == (size_t(64) << 20),
+        "memory: default ceiling 64 MiB");
+  {
+    // The review's case: a 16 MiB line of nested empty arrays, under every other cap until the 4M-value one.
+    const size_t target = MiniJson::kMaxBytes - 8;
+    std::string b = "[[";
+    b.reserve(target + 16);
+    size_t n = 0;
+    while (b.size() + 6 < target) {
+      b += "[],";
+      if (++n % 1000000 == 0) {
+        b.back() = ']';
+        b += ",[";
+      }
+    }
+    b += "[]]]";
+    check(b.size() <= MiniJson::kMaxBytes && err_of(b, def) == "json: memory ceiling",
+          "memory: 16 MiB of empty arrays refused at the ceiling, before the value cap");
+  }
+  l = MiniJson::Limits{};
+  l.max_memory_bytes = 64 * 1024;
+  check(ok(arr(100), l), "memory: 100 numbers fit a 64 KiB budget");
+  check(!ok(arr(20000), l) && err_of(arr(20000), l) == "json: memory ceiling", "memory: 20000 numbers do not");
+  check(ok("\"" + std::string(20000, 'a') + "\"", l), "memory: a 20 KB string fits a 64 KiB budget");
+  check(!ok("\"" + std::string(70000, 'a') + "\"", l), "memory: a 70 KB string does not");
+  check(!ok(obj(5000), l), "memory: an object's members are charged too");
+  {
+    // Find the exact edge for one shape, then check one byte less refuses it.
+    const std::string t = arr(50);
+    size_t lo = 1, hi = size_t(1) << 20;
+    MiniJson::Limits e{};
+    while (lo < hi) {
+      const size_t mid = lo + (hi - lo) / 2;
+      e.max_memory_bytes = mid;
+      if (ok(t, e)) hi = mid; else lo = mid + 1;
+    }
+    e.max_memory_bytes = lo;
+    const bool at = ok(t, e);
+    e.max_memory_bytes = lo - 1;
+    check(at && !ok(t, e), "memory: passes at its edge, refused one byte under");
+  }
+  {
+    // A long number token is read in place: a 1 MB run of digits needs no heap at all.
+    MiniJson::Limits n1{};
+    n1.max_memory_bytes = 1;
+    check(ok("1." + std::string(1000000, '0'), n1), "memory: a long number token is read in place, not copied");
+  }
+  l = MiniJson::Limits{};
+  l.max_memory_bytes = size_t(1) << 40;
+  check(err_of(arr(800000), l) == "json: memory ceiling", "clamp: memory ceiling cannot be raised past 64 MiB");
+  check(ok(arr(100000), def), "memory: 100000 numbers still parse with the default ceiling");
+
+  // Duplicate refusal on a big object costs n log n, and still finds the duplicate.
+  {
+    l = MiniJson::Limits{};
+    l.reject_duplicate_keys = true;
+    std::string big = obj(100000);
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool clean = ok(big, l);
+    big.back() = ',';
+    big += "\"k12345\":1}";
+    const bool dup = !ok(big, l) && err_of(big, l) == "json: duplicate key";
+    const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    check(clean, "duplicates: 100000 distinct keys pass with refusal on");
+    check(dup, "duplicates: one repeated key at the end of 100000 is found");
+    check(el < 20.0, "duplicates: the big-object check finishes in seconds, not hours");
+    std::printf("[MJLIM] 100000-key duplicate checks: %.2f s\n", el);
+  }
 
   std::printf("[MJLIM] %d PASS / %d FAIL\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
