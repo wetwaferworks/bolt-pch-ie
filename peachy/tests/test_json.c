@@ -2,6 +2,7 @@
 #include "pt.h"
 #include "pj_base.h"
 #include "pj_json.h"
+#include "pj_platform.h"
 
 static pj_limits L = {4096, 32, 64, 256, 1024, 2048};
 static unsigned char scratch_mem[1 << 20];
@@ -149,6 +150,35 @@ static void limits(void) {
   CHECK(parse_lim(b, n, &l, &d) != 0, "wide array over max_values refused");
 }
 
+/* A zero mantissa with a huge exponent is zero, and costs no more than any other number: before the fix each
+ * "0e99999" ran the scaling loop ~10^5 times, so one message of them took over a second (review 2026-11-16). */
+static void zero_mantissa(void) {
+  pj_doc d;
+  static char b[200000];
+  pj_limits l = L;
+  size_t n = 0, i;
+  uint64_t t0, el;
+  CHECK(parse("0e99999", &d) == 0 && d.t[0].d == 0.0, "0e99999 is zero");
+  CHECK(parse("-0E+99999", &d) == 0 && d.t[0].d == 0.0, "-0E+99999 is zero");
+  CHECK(parse("0.000e-99999", &d) == 0 && d.t[0].d == 0.0, "0.000e-99999 is zero");
+  CHECK(parse("1e99999", &d) != 0, "a non-zero mantissa with a huge exponent is still refused");
+  CHECK(parse("1e-99999", &d) != 0, "and so is a huge negative exponent");
+  l.max_bytes = sizeof(b);
+  l.max_items = 20000;
+  l.max_values = 20000;
+  b[n++] = '[';
+  for (i = 0; i < 12000; ++i) {
+    memcpy(b + n, "0e99999,", 8);
+    n += 8;
+  }
+  b[n - 1] = ']';
+  t0 = pj_mono_ns();
+  CHECK(parse_lim(b, n, &l, &d) == 0, "12000 zero-mantissa numbers parse");
+  el = pj_mono_ns() - t0;
+  CHECK(el < 500000000ull, "12000 zero-mantissa numbers parse in well under half a second");
+  printf("12000 x 0e99999: %.3f ms\n", (double)el / 1e6);
+}
+
 static void writer(void) {
   char buf[256];
   pj_w w;
@@ -240,6 +270,7 @@ int main(int argc, char** argv) {
   conformance();
   values();
   limits();
+  zero_mantissa();
   writer();
   random_bytes();
   return pt_done("peachy_json");

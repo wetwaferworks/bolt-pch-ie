@@ -253,7 +253,10 @@ static int read_number(pstate* p, pj_tok* t) {
   } else {
     double v = (double)mant;
     long e = exp10;
-    if (mant != 0 && (e > 308 + 19 || e < -340)) return fail(p->d, "number out of range");
+    /* A zero mantissa is zero whatever the exponent: skip the scaling loops, which would otherwise run up to
+     * ~10^5 steps per number ("0e99999") and let one message cost seconds of CPU. */
+    if (mant == 0) e = 0;
+    if (e > 308 + 19 || e < -340) return fail(p->d, "number out of range");
     while (e > 0) {
       v *= 10.0;
       --e;
