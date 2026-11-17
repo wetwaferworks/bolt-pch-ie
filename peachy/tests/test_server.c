@@ -308,6 +308,27 @@ static void grants_and_rate(void) {
     }
     CHECK(ok_calls == 2 && limited == 1, "refill at rate_per_sec");
   }
+  /* hold is the safe state, so it is never rate limited and never spends the budget (review 2026-11-16) */
+  {
+    peachy_status_info st;
+    int ok_calls = 0, k;
+    r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"status\"}}");
+    CHECK(has(r, "rate limited"), "budget is spent before the hold");
+    for (k = 0; k < 4; ++k) {
+      r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":33,\"method\":\"tools/call\",\"params\":{\"name\":\"hold\"}}");
+      CHECK(!has(r, "rate limited") && has(r, "\"isError\":false"), "hold works with the budget spent");
+    }
+    memset(&st, 0, sizeof(st));
+    st.struct_size = sizeof(st);
+    A->status(s, &st);
+    CHECK(st.held, "the client's hold took effect");
+    ck.t += 1000000000ull;
+    for (k = 0; k < 3; ++k) {
+      r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":34,\"method\":\"tools/call\",\"params\":{\"name\":\"status\"}}");
+      if (!has(r, "rate limited")) ++ok_calls;
+    }
+    CHECK(ok_calls == 2, "the holds cost nothing from the bucket");
+  }
   A->session_close(s);
   pt_client_clear(&cl);
 }

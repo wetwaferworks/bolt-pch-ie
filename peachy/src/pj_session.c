@@ -1123,12 +1123,13 @@ static void handle_tools_call(PeachySession* s, const uint8_t* sha, const rpc_id
     return;
   }
   refill(s);
-  if (s->bucket < 1000u) {
+  /* hold is the safe state: it is never rate limited, so a client that spent its budget can still stop */
+  if (t != PJ_T_HOLD && s->bucket < 1000u) {
     audit_in(s, sha, "tools/call", pj_tool_names[t], "refused", "rate limited");
     reply_tool_error(s, id, "rate limited: slow down");
     return;
   }
-  s->bucket -= 1000u;
+  if (t != PJ_T_HOLD) s->bucket -= 1000u;
   if (s->held && (t == PJ_T_OBSERVE || t == PJ_T_PLAN || t == PJ_T_PROPOSE)) {
     audit_in(s, sha, "tools/call", pj_tool_names[t], "refused", "held");
     if (t == PJ_T_PROPOSE) reject(s, id, new_prop(s), 6, "Peachy is held");
