@@ -128,6 +128,22 @@ int main(int argc, char** argv) {
     else if (!strcmp(k, "--bad-state")) bad_state = atoi(v);
     else if (!strcmp(k, "--sign")) sign_text = v;
     else if (!strcmp(k, "--stats")) stats_path = v;
+    else if (!strcmp(k, "--probe-handle")) {
+      /* test-only: report whether a handle value from the parent is open here, and which file it names */
+#if defined(_WIN32)
+      HANDLE h = (HANDLE)(uintptr_t)strtoull(v, NULL, 16);
+      DWORD fl = 0;
+      char name[600] = "";
+      if (GetHandleInformation(h, &fl) && GetFinalPathNameByHandleA(h, name, sizeof(name), 0) < sizeof(name))
+        printf("probe open %s\n", name);
+      else
+        printf("probe closed\n");
+#else
+      printf("probe closed\n");
+#endif
+      fflush(stdout);
+      return 0;
+    }
   }
   for (i = 0; i < boot_lines; ++i) printf("[boot] loading chunk %d of the fake world\n", i);
   fflush(stdout);

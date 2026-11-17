@@ -366,6 +366,46 @@ static void unreachable(void) {
   }
 }
 
+#if defined(_WIN32)
+#include <windows.h>
+/* the game gets its three standard handles and nothing else from Peachy's process (review 2026-11-16, L7) */
+static void inherits_only_stdio(void) {
+  SECURITY_ATTRIBUTES sa;
+  HANDLE h;
+  char path[700], hex[32], out[1024];
+  const char* a[3];
+  pj_proc p;
+  size_t len = 0;
+  uint64_t t_end;
+  memset(&sa, 0, sizeof(sa));
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+  snprintf(path, sizeof(path), "%s/probe-inherit.txt", g_dir);
+  h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  CHECK(h != INVALID_HANDLE_VALUE, "inherit probe: an inheritable handle in this process");
+  if (h == INVALID_HANDLE_VALUE) return;
+  snprintf(hex, sizeof(hex), "%llx", (unsigned long long)(uintptr_t)h);
+  a[0] = g_fake;
+  a[1] = "--probe-handle";
+  a[2] = hex;
+  memset(&p, 0, sizeof(p));
+  CHECK(pj_proc_spawn(&p, a, 3, NULL, NULL) == 0, "inherit probe: the game starts");
+  t_end = pj_mono_ns() + 10000000000ull;
+  while (p.started && len + 1 < sizeof(out) && !memchr(out, '\n', len) && pj_mono_ns() < t_end) {
+    size_t n = 0;
+    if (pj_proc_read(&p, out + len, sizeof(out) - 1 - len, &n, 100) != 0) break;
+    len += n;
+  }
+  out[len] = 0;
+  pj_proc_stop(&p, 5000);
+  CloseHandle(h);
+  CHECK(has(out, "probe ") && !has(out, "probe-inherit"), "the game does not inherit Peachy's other handles");
+  if (has(out, "probe-inherit")) fprintf(stderr, "  child said: %s\n", out);
+}
+#else
+static void inherits_only_stdio(void) {}
+#endif
+
 static void outside_text_stays_out(void) {
   gs g;
   const char* r;
@@ -497,6 +537,7 @@ int main(int argc, char** argv) {
   quirks_that_work();
   failures();
   unreachable();
+  inherits_only_stdio();
   outside_text_stays_out();
   callbacks();
   return pt_done("peachy_game");

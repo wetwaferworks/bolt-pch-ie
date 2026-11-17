@@ -175,7 +175,10 @@ static wchar_t* build_cmdline(const char* const* argv, uint32_t argc) {
 int pj_proc_spawn(pj_proc* p, const char* const* argv, uint32_t argc, const char* workdir, const char* stderr_log) {
   SECURITY_ATTRIBUTES sa;
   HANDLE in_r = NULL, in_w = NULL, out_r = NULL, out_w = NULL, log;
-  STARTUPINFOW si;
+  HANDLE inherit[3];
+  LPPROC_THREAD_ATTRIBUTE_LIST al = NULL;
+  SIZE_T al_size = 0;
+  STARTUPINFOEXW si;
   PROCESS_INFORMATION pi;
   wchar_t *cl, *wd = NULL, *wl;
   uint32_t i;
@@ -209,14 +212,37 @@ int pj_proc_spawn(pj_proc* p, const char* const* argv, uint32_t argc, const char
     free(wd);
     return -1;
   }
+  /* The child inherits exactly its three standard handles and nothing else. Without a handle list, every
+   * inheritable handle in this process would go too, including the host's own stdio pipes to the MCP client. If
+   * the list can't be built, the spawn fails rather than falling back to inheriting everything. */
+  inherit[0] = in_r;
+  inherit[1] = out_w;
+  inherit[2] = log;
+  InitializeProcThreadAttributeList(NULL, 1, 0, &al_size);
+  al = al_size ? (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(al_size) : NULL;
+  if (!al || !InitializeProcThreadAttributeList(al, 1, 0, &al_size)) {
+    free(al);
+    al = NULL;
+  } else if (!UpdateProcThreadAttribute(al, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit, sizeof(inherit), NULL, NULL)) {
+    DeleteProcThreadAttributeList(al);
+    free(al);
+    al = NULL;
+  }
   memset(&si, 0, sizeof(si));
-  si.cb = sizeof(si);
-  si.dwFlags = STARTF_USESTDHANDLES;
-  si.hStdInput = in_r;
-  si.hStdOutput = out_w;
-  si.hStdError = log;
+  si.StartupInfo.cb = sizeof(si);
+  si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  si.StartupInfo.hStdInput = in_r;
+  si.StartupInfo.hStdOutput = out_w;
+  si.StartupInfo.hStdError = log;
+  si.lpAttributeList = al;
   memset(&pi, 0, sizeof(pi));
-  ok = CreateProcessW(NULL, cl, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, wd, &si, &pi);
+  ok = al ? CreateProcessW(NULL, cl, NULL, NULL, TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, wd,
+                           &si.StartupInfo, &pi)
+          : FALSE;
+  if (al) {
+    DeleteProcThreadAttributeList(al);
+    free(al);
+  }
   CloseHandle(in_r);
   CloseHandle(out_w);
   CloseHandle(log);
