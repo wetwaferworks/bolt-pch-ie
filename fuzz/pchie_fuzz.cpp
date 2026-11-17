@@ -51,7 +51,16 @@ void mutate(Bytes& b, Rng& r, size_t max_len) {
 // ---- MiniJson ----
 bool run_json(const Bytes& in) {
   MiniJson j; std::string err;
-  return MiniJson::parse(std::string(in.begin(), in.end()), j, err);
+  const std::string text(in.begin(), in.end());
+  const bool loose = MiniJson::parse(text, j, err);
+  // Tight limits (the shape PMCP-style callers use) must never accept what the defaults refuse.
+  MiniJson::Limits tight;
+  tight.max_bytes = 2048; tight.max_depth = 8; tight.max_string_bytes = 64; tight.max_items = 16;
+  tight.max_values = 128; tight.reject_duplicate_keys = true;
+  MiniJson t; std::string terr;
+  const bool strict = MiniJson::parse(text, t, terr, tight);
+  if (strict && !loose) { std::fprintf(stderr, "json: tight limits accepted what defaults refused\n"); std::abort(); }
+  return loose;
 }
 std::vector<Bytes> json_seeds() {
   std::vector<Bytes> s;

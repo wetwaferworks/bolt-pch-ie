@@ -1,6 +1,10 @@
 // Bolt PCHIE - minimal JSON value + parser for the LithoKraft MCP client (pchie_lk_pilot).
 // Concrete final. Serial, no mutex, no atomic. Reads only what the MCP wire needs: objects,
 // arrays, strings (with \uXXXX -> UTF-8), numbers, true/false/null. Depth capped (fail closed).
+// Size capped too (2026-11-16): the whole text, each string, the items in one array or object, and the
+// number of values in the document all have ceilings, checked while reading. The defaults match the game's
+// own 16 MiB line cap, so every reply that parsed before still parses. A caller may pass tighter Limits;
+// values looser than the defaults are clamped to them. Duplicate keys can be refused on request.
 // Not on the official chain; nothing here is hashed.
 #pragma once
 
@@ -25,11 +29,35 @@ class MiniJson final {
   std::vector<std::pair<std::string, MiniJson>> obj;
 
   static constexpr int kMaxDepth = 64;
+  static constexpr size_t kMaxBytes = size_t(16) << 20;        // the game's MCP line cap
+  static constexpr size_t kMaxStringBytes = size_t(16) << 20;  // one decoded string
+  static constexpr size_t kMaxItems = size_t(1) << 20;         // entries in one array or object
+  static constexpr size_t kMaxValues = size_t(4) << 20;        // values in the whole document
+
+  // Ceilings for one parse. Zero, or anything above the matching kMax*, means the kMax* default.
+  struct Limits {
+    size_t max_bytes = kMaxBytes;
+    int max_depth = kMaxDepth;
+    size_t max_string_bytes = kMaxStringBytes;
+    size_t max_items = kMaxItems;
+    size_t max_values = kMaxValues;
+    bool reject_duplicate_keys = false;
+  };
 
   static bool parse(const std::string& text, MiniJson& out, std::string& err) {
-    size_t i = 0;
+    return parse(text, out, err, Limits{});
+  }
+
+  static bool parse(const std::string& text, MiniJson& out, std::string& err, const Limits& requested) {
+    Ctx cx;
+    cx.lim = clamp(requested);
     out = MiniJson{};
-    if (!value(text, i, out, 0, err)) return false;
+    if (text.size() > cx.lim.max_bytes) {
+      err = "json: input too large";
+      return false;
+    }
+    size_t i = 0;
+    if (!value(text, i, out, 0, err, cx)) return false;
     skip_ws(text, i);
     if (i != text.size()) {
       err = "json: trailing characters";
@@ -83,6 +111,21 @@ class MiniJson final {
   }
 
  private:
+  struct Ctx {
+    Limits lim;
+    size_t values = 0;
+  };
+
+  static Limits clamp(const Limits& r) {
+    Limits l = r;
+    if (l.max_bytes == 0 || l.max_bytes > kMaxBytes) l.max_bytes = kMaxBytes;
+    if (l.max_depth <= 0 || l.max_depth > kMaxDepth) l.max_depth = kMaxDepth;
+    if (l.max_string_bytes == 0 || l.max_string_bytes > kMaxStringBytes) l.max_string_bytes = kMaxStringBytes;
+    if (l.max_items == 0 || l.max_items > kMaxItems) l.max_items = kMaxItems;
+    if (l.max_values == 0 || l.max_values > kMaxValues) l.max_values = kMaxValues;
+    return l;
+  }
+
   static void skip_ws(const std::string& s, size_t& i) {
     while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
   }
@@ -130,7 +173,7 @@ class MiniJson final {
     return true;
   }
 
-  static bool string_lit(const std::string& s, size_t& i, std::string& o, std::string& err) {
+  static bool string_lit(const std::string& s, size_t& i, std::string& o, std::string& err, size_t max_len) {
     if (i >= s.size() || s[i] != '"') {
       err = "json: expected string";
       return false;
@@ -138,8 +181,18 @@ class MiniJson final {
     ++i;
     o.clear();
     while (i < s.size()) {
+      if (o.size() > max_len) {
+        err = "json: string too long";
+        return false;
+      }
       const char c = s[i++];
-      if (c == '"') return true;
+      if (c == '"') {
+        if (o.size() > max_len) {
+          err = "json: string too long";
+          return false;
+        }
+        return true;
+      }
       if (static_cast<unsigned char>(c) < 0x20) {  // RFC 8259: control characters must be escaped
         err = "json: raw control character in string";
         return false;
@@ -197,9 +250,13 @@ class MiniJson final {
     return false;
   }
 
-  static bool value(const std::string& s, size_t& i, MiniJson& v, int depth, std::string& err) {
-    if (depth > kMaxDepth) {
+  static bool value(const std::string& s, size_t& i, MiniJson& v, int depth, std::string& err, Ctx& cx) {
+    if (depth > cx.lim.max_depth) {
       err = "json: too deep";
+      return false;
+    }
+    if (++cx.values > cx.lim.max_values) {
+      err = "json: too many values";
       return false;
     }
     skip_ws(s, i);
@@ -218,8 +275,18 @@ class MiniJson final {
       }
       for (;;) {
         skip_ws(s, i);
+        if (v.obj.size() >= cx.lim.max_items) {
+          err = "json: too many keys in one object";
+          return false;
+        }
         std::string key;
-        if (!string_lit(s, i, key, err)) return false;
+        if (!string_lit(s, i, key, err, cx.lim.max_string_bytes)) return false;
+        if (cx.lim.reject_duplicate_keys)
+          for (const auto& kv : v.obj)
+            if (kv.first == key) {
+              err = "json: duplicate key";
+              return false;
+            }
         skip_ws(s, i);
         if (i >= s.size() || s[i] != ':') {
           err = "json: expected ':'";
@@ -227,7 +294,7 @@ class MiniJson final {
         }
         ++i;
         MiniJson child;
-        if (!value(s, i, child, depth + 1, err)) return false;
+        if (!value(s, i, child, depth + 1, err, cx)) return false;
         v.obj.emplace_back(std::move(key), std::move(child));
         skip_ws(s, i);
         if (i < s.size() && s[i] == ',') {
@@ -251,8 +318,12 @@ class MiniJson final {
         return true;
       }
       for (;;) {
+        if (v.arr.size() >= cx.lim.max_items) {
+          err = "json: too many items in one array";
+          return false;
+        }
         MiniJson child;
-        if (!value(s, i, child, depth + 1, err)) return false;
+        if (!value(s, i, child, depth + 1, err, cx)) return false;
         v.arr.push_back(std::move(child));
         skip_ws(s, i);
         if (i < s.size() && s[i] == ',') {
@@ -269,7 +340,7 @@ class MiniJson final {
     }
     if (c == '"') {
       v.type = Type::String;
-      return string_lit(s, i, v.str, err);
+      return string_lit(s, i, v.str, err, cx.lim.max_string_bytes);
     }
     if (lit(s, i, "true")) {
       v.type = Type::Bool;

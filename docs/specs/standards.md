@@ -93,7 +93,7 @@ All the crypto here is written in-house on one SHA-256. Nothing imports OpenSSL,
 ## Interfaces and data formats
 
 ### RFC 8259, The JavaScript Object Notation (JSON) Data Interchange Format
-- **Where.** `pchie::MiniJson` (`include/pchie/MiniJson.h`), a small fail-closed parser with a nesting cap of 64 levels. It reads objects, arrays, strings with `\uXXXX` escapes, numbers, `true`, `false`, and `null`. The RL side records under `include/pchie/rl/` write JSON Lines, one object per line.
+- **Where.** `pchie::MiniJson` (`include/pchie/MiniJson.h`), a small fail-closed parser with a nesting cap of 64 levels and size caps checked while reading (16 MiB of text, the same as the game's line cap; 16 MiB per string; about a million items per array or object and four million values per document). Callers can pass tighter limits and can refuse duplicate keys. It reads objects, arrays, strings with `\uXXXX` escapes, numbers, `true`, `false`, and `null`. The RL side records under `include/pchie/rl/` write JSON Lines, one object per line.
 - **What we use it for.** Reading MCP replies from LithoKraft, plus the RL label, plan-memory, and hash-move records. MiniJson itself is not on the official chain (its own header says so); the scratch RL tuple logs are sealed over their raw lines.
 
 ### JSON-RPC 2.0 Specification (jsonrpc.org; not an RFC)
