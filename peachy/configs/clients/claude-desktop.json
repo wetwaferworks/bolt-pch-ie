@@ -1,0 +1,36 @@
+{
+  "mcpServers": {
+    "pmcp": {
+      "command": "C:/PMCP/peachy_host.exe",
+      "args": [
+        "serve",
+        "--lib",
+        "C:/PMCP/peachy.dll",
+        "--allowlist",
+        "C:/PMCP/allowlist.json",
+        "--audit-dir",
+        "C:/PMCP/audit",
+        "--client",
+        "claude",
+        "--token-file",
+        "C:/PMCP/tokens/claude.token",
+        "--session",
+        "claude",
+        "--mode",
+        "record",
+        "--planner",
+        "mjolnir",
+        "--mjolnir",
+        "C:/PMCP/mjolnir.dll",
+        "--pchie",
+        "C:/PMCP/pchie.dll",
+        "--game-exe",
+        "C:/PMCP/game/lithokraft_headless.exe",
+        "--game-arg",
+        "--mcp-stdio",
+        "--game-stderr",
+        "C:/PMCP/logs/game-claude.log"
+      ]
+    }
+  }
+}

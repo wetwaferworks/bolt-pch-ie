@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "clients": [
+    {
+      "name": "grok",
+      "transports": [
+        "stdio"
+      ],
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tools": [
+        "observe",
+        "plan",
+        "propose",
+        "proposal_status",
+        "audit_head"
+      ],
+      "rate_per_sec": 8,
+      "burst": 16,
+      "max_mode": "record"
+    },
+    {
+      "name": "grokbot",
+      "transports": [
+        "stdio"
+      ],
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tools": [],
+      "rate_per_sec": 8,
+      "burst": 16,
+      "max_mode": "record"
+    },
+    {
+      "name": "gemini",
+      "transports": [
+        "stdio"
+      ],
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tools": [],
+      "rate_per_sec": 8,
+      "burst": 16,
+      "max_mode": "record"
+    },
+    {
+      "name": "muse",
+      "transports": [
+        "stdio"
+      ],
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tools": [],
+      "rate_per_sec": 8,
+      "burst": 16,
+      "max_mode": "record"
+    },
+    {
+      "name": "claude",
+      "transports": [
+        "stdio"
+      ],
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tools": [],
+      "rate_per_sec": 8,
+      "burst": 16,
+      "max_mode": "record"
+    },
+    {
+      "name": "generic",
+      "transports": [
+        "stdio"
+      ],
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tools": [],
+      "rate_per_sec": 8,
+      "burst": 16,
+      "max_mode": "record"
+    }
+  ]
+}

@@ -117,7 +117,7 @@ peachy_target(peachy_fake_game OFF)
 
 set(PEACHY_TEST_TMP ${CMAKE_CURRENT_BINARY_DIR}/peachy-test-tmp)
 file(MAKE_DIRECTORY ${PEACHY_TEST_TMP})
-foreach(t json audit ring server game plan dll host)
+foreach(t json audit ring server game plan dll host pm8)
   add_executable(peachy_test_${t} tests/test_${t}.c)
   peachy_target(peachy_test_${t} OFF)
   target_link_libraries(peachy_test_${t} PRIVATE peachy_core)
@@ -137,6 +137,7 @@ add_test(NAME peachy_plan COMMAND peachy_test_plan ${PEACHY_TEST_TMP} $<TARGET_F
 add_test(NAME peachy_dll COMMAND peachy_test_dll ${PEACHY_TEST_TMP} $<TARGET_FILE:peachy>)
 add_test(NAME peachy_host_e2e COMMAND peachy_test_host ${PEACHY_TEST_TMP} $<TARGET_FILE:peachy_host> $<TARGET_FILE:peachy>
          $<TARGET_FILE:peachy_fake_game> $<TARGET_FILE:peachy_auditcheck>)
+add_test(NAME peachy_pm8_stubs COMMAND peachy_test_pm8 ${PEACHY_TEST_TMP} ${CMAKE_CURRENT_SOURCE_DIR}/configs)
 add_test(NAME peachy_no_locks COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_CURRENT_SOURCE_DIR} -P
          ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_no_locks.cmake)
 if(MSVC)
@@ -149,7 +150,7 @@ else()
            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_exports.cmake)
 endif()
 set_tests_properties(peachy_json peachy_audit peachy_ring peachy_server peachy_game peachy_plan peachy_dll
-                     peachy_host_e2e peachy_no_locks peachy_exports PROPERTIES LABELS peachy TIMEOUT 600)
+                     peachy_host_e2e peachy_pm8_stubs peachy_no_locks peachy_exports PROPERTIES LABELS peachy TIMEOUT 600)
 
 # Fuzzing: an in-house mutation fuzzer that runs everywhere, plus libFuzzer entry points when asked.
 add_executable(peachy_fuzz fuzz/peachy_fuzz.c)
