@@ -459,3 +459,10 @@ target_link_libraries(pchie_ternary_research_test PRIVATE pchie_ternary_research
 add_test(NAME pchie_ternary_research COMMAND pchie_ternary_research_test)
 add_executable(pchie_ternary_measure tools/pchie_ternary_measure.cpp)
 target_link_libraries(pchie_ternary_measure PRIVATE pchie_ternary_research Threads::Threads)
+
+# Peachy (PMCP): the standalone MCP library, peachy.dll / libpeachy.so, written in C11. It builds on its own too
+# (cmake -S peachy). See peachy/README.md.
+option(PCHIE_PEACHY "Build Peachy (PMCP) and its tests" ON)
+if(PCHIE_PEACHY)
+  add_subdirectory(peachy)
+endif()
