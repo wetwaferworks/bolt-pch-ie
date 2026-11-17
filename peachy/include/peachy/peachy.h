@@ -98,7 +98,8 @@ typedef struct peachy_limits {
   uint32_t arena_bytes;       /* default 8 MiB, max 256 MiB; the session never grows past it */
   uint32_t max_message_ms;    /* one inbound message, end to end; default 5000 */
   uint32_t max_tool_ms;       /* one tool call; default 5000 */
-  uint32_t max_plan_ms;       /* one planning call; default 2000 */
+  uint32_t max_plan_ms;       /* one planning call; default 2000. Checked when the call returns, so it holds a
+                               * slow planner but can't stop a hung one: plan_search_budget is the real ceiling */
   uint32_t max_game_ms;       /* one game round trip; default 1000 */
   uint32_t max_game_init_ms;  /* game start and handshake; default 120000 */
   uint32_t rate_per_sec;      /* tool calls per second ceiling; default 16, max 256 */

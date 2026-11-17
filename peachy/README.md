@@ -25,7 +25,11 @@ Interface status: **alpha** (`PEACHY_ABI_MAJOR 0`). The interface may change bet
   threads. In own-thread mode, the host talks to the worker only through two single-producer, single-consumer rings
   built on atomics.
 - **Hard ceilings.** Each session takes one memory block when it opens (8 MiB by default) and never grows past it.
-  Every message, tool call, game round trip and planning call has a deadline.
+  Every message, tool call, game round trip and planning call has a deadline. For planning, the hard ceiling is
+  PCHIE's node budget (`plan_search_budget`, counted in nodes, never time): `max_plan_ms` is checked when the call
+  returns and holds the session if it ran long, but it can't interrupt a planner that never returns. A planner
+  that hangs would hang the worker with it. Before `actuate` exists, the planner has to run behind a watchdog that
+  can hold the session while the call is still out.
 - **One safe state.** Anything unexpected ends the same way: nothing moves, `player_release` goes to the game, the
   reason is logged, and the session is held. Only the person at the host console can resume. Resume first re-reads
   the audit log from disk and requires it to match the session record for record and hash for hash, refuses a

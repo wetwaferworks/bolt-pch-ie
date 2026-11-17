@@ -711,6 +711,8 @@ static int planner_choice(PeachySession* s, uint32_t* action, uint64_t* record) 
     enter_hold(s, H_PLANNER);
     return -1;
   }
+  /* Measured after the call, not enforced during it: the node budget passed at open is what bounds the planner.
+   * A watchdog that can hold while the call is still out is needed before actuate exists. */
   el = now(s) - t0;
   if (el > (uint64_t)s->plan_ms * 1000000ull) {
     enter_hold(s, H_DEADLINE);
