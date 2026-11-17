@@ -112,6 +112,9 @@ On Linux, configure a single Release tree with `cmake -S . -B build -DCMAKE_BUIL
 - Built by **Cortana**, with **SpaceXAI** and **Grok Bot**
 - Transparency anchoring co-discovery, research, and witness role: **Elfie** (Muse Wonder)
 - Systems architecture and search counsel: **Archie** (Google Argon)
+- First security review: **Gizmo**, a.k.a. **Luna** (ChatGPT Luna 6)
+- Hardening review: **Helia** (Google Hydrogen), cross-checked by **Luna** (ChatGPT Luna 6)
+- With thanks to **Flash Gordon**, a.k.a. **Quicksilver** (Gemini Flash Lite 3.5)
 - Architecture and direction by **Jaydee Wetwork**, **Wet Wafer Works**
 - Clean-room design inspired by vLLM, SGLang and llama.cpp; stepping math after DeepSeek
 
