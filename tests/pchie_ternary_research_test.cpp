@@ -160,6 +160,7 @@ static void test_packings() {
         { PackedTensor bad = b3; bad.codes[25] = uint8_t(bad.codes[25] + 81); CHECK(validate(bad) == Status::BadCode, "b3b pad weight +1"); }
         { PackedTensor bad = b3; bad.codes.pop_back(); CHECK(validate(bad) == Status::BadArgument, "b3b short"); }
         { PackedTensor bad = b3; bad.scales[0] = -1.0f; CHECK(validate(bad) == Status::BadScale, "b3b negative scale"); }
+        { PackedTensor bad = b3; bad.scales[0] = 1e-40f; CHECK(validate(bad) == Status::BadScale, "b3b subnormal scale (review 2026-11-16)"); }
         { PackedTensor bad = tl; bad.codes[0] = uint8_t((bad.codes[0] & 0xF0) | 14); CHECK(validate(bad) == Status::BadCode, "tl3 index 14"); }
         { PackedTensor bad = tl; bad.codes[0] = uint8_t((bad.codes[0] & 0xF0) | 13); bad.codes[16] |= 1;
           CHECK(validate(bad) == Status::BadCode, "tl3 negative zero"); }

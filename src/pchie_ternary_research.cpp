@@ -95,7 +95,8 @@ Status ternarize_group(const float* w, size_t n, Fit fit, Round rnd, uint64_t se
 
 // ------------------------------------------------------------------------------------------------ packings
 static bool scales_ok(const std::vector<float>& s) noexcept {
-    for (float v : s) if (!std::isfinite(v) || v < 0.0f) return false;
+    // Same rule as the main path (57cf857): subnormal scales are refused, so no result depends on FTZ/DAZ.
+    for (float v : s) if (!std::isfinite(v) || v < 0.0f || (v != 0.0f && v < FLT_MIN)) return false;
     return true;
 }
 static uint64_t expect_scales(ScaleMode m, uint64_t rows, uint64_t cols) noexcept {
