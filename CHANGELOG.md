@@ -2,6 +2,19 @@
 
 All notable changes to Bolt PCHIE are listed here, newest first.
 
+## Unreleased
+
+### Security: overnight review
+
+These fixes come from Cortana's overnight code review of the Peachy (PMCP) and MiniJson work, on Nov 16, 2026. Each finding was checked against the code and fixed, and each fix has its own tests. No official hash moved: the maze H_world, the B1 actions and the gauntlet H_bolt are the same as before.
+
+- **Only an administrator can change grants (H1).** Any process running under the user's account, including the outside models' own command-line tools, could grant itself PMCP tools or read another client's token. `allow-add`, `grant`, `revoke` and the new `protect` now run only elevated (root on POSIX). `serve` refuses to run elevated. It also refuses an allowlist its account could change or swap out through a folder above it, and a token file another account could read. `token-new` makes tokens private, and the new `check` command says why a file would be refused. The setup and the limits are in `peachy/configs/README.md`.
+- **Every inbound message is rate limited, and the audit log has a ceiling (M1).** Pings, notifications and stray responses were free and each wrote an audit record, so one client could fill the disk. Every message now pays a generous bucket (512 a second, burst 8,192). Going over counts as a bad message and ends in a cut-off. The log stops at 256 MiB and holds the session.
+- **A zero mantissa no longer burns CPU (M2).** `0e99999` ran the exponent loop about 100,000 times. One message of them took over a second; now it takes well under a millisecond.
+- **Resume re-reads the audit log (M3).** Resume now re-derives the chain from disk and requires it to match the session record for record, so a log truncated or edited while held can't be resumed past. On Windows the check reads the live log with full sharing.
+- **MiniJson has a hard memory ceiling (M4).** A 16 MiB line could reach 427 MiB before a cap refused it. Every buffer is now charged against a 64 MiB budget before it is allocated, and the duplicate-key check sorts once per object instead of comparing every pair.
+- **A client can always ask to hold (M5).** `hold` was rate limited, so a client that had spent its budget couldn't stop. It is never rate limited now and costs nothing.
+
 ## 0.1.2
 
 ### Added

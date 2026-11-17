@@ -1,5 +1,13 @@
 # Release notes
 
+## Unreleased
+
+Security fixes from Cortana's overnight code review of Peachy (PMCP) and MiniJson, on Nov 16, 2026. No official hash moved.
+
+- **Grants need an administrator.** `peachy_host allow-add`, `grant`, `revoke` and `protect` run only from an elevated prompt (`sudo` on Linux). `serve` runs from a normal prompt and refuses an allowlist your account could change, or a token other accounts could read. Run `peachy_host protect` once, elevated, then `peachy_host check` to confirm. See `peachy/configs/README.md`.
+- **Hard ceilings held.** Every inbound PMCP message is rate limited, the audit log stops at 256 MiB, a zero-mantissa number costs no CPU, and MiniJson never allocates more than 64 MiB for one parse.
+- **Failing safe held.** A client can always ask to hold, and resume refuses an audit log that no longer matches the session.
+
 ## 0.1.2
 
 This release is a security hardening pass. It comes from our first security review, by Gizmo (ChatGPT Luna 6), and a second hardening review by Helia (Google Hydrogen), cross-checked by Luna (ChatGPT Luna 6). Every finding was checked against the code and fixed, and each fix has its own tests. No official or neutrality hash moved: the maze H_world, the B1 actions and the gauntlet H_bolt are the same as before.
