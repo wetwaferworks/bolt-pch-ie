@@ -114,6 +114,11 @@ markers through every field to check this.
 - Grants come only from this file or the host console, never over MCP.
 - `max_mode` may be `record` or `advisory`.
 - Unknown fields are refused.
+- The outside models run under the same account as the person and can run commands, so `peachy_host` leaves the
+  "only the person can grant" rule to the operating system. `allow-add`, `grant`, `revoke` and `protect` run only
+  elevated (root on POSIX). `serve` never runs elevated, and it refuses an allowlist its own account could change or
+  swap out through a folder above it, and a token file any other account could read. Setup and the limits of this
+  are in [`configs/README.md`](configs/README.md#protecting-the-files).
 
 ## Audit log
 

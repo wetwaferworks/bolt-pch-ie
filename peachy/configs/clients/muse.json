@@ -8,7 +8,7 @@
         "--lib",
         "C:/PMCP/peachy.dll",
         "--allowlist",
-        "C:/PMCP/allowlist.json",
+        "C:/ProgramData/PMCP/allowlist.json",
         "--audit-dir",
         "C:/PMCP/audit",
         "--client",

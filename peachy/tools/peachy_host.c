@@ -11,17 +11,25 @@
  *   peachy_host allow-add --allowlist <file> --client <name> (--token-sha256 <hex> | --token-file <file>)
  *                     [--transport stdio|in_process] [--max-mode record|advisory] [--rate <n>] [--burst <n>]
  *   peachy_host grant|revoke --allowlist <file> --client <name> <tool>...
+ *   peachy_host protect --allowlist <file>
+ *       Locks the allowlist and its folder down: owned by Administrators (root), read-only for this account.
+ *   peachy_host check --allowlist <file> [--token-file <file>]
+ *       Says whether serve would accept these files, and if not, why.
  *   peachy_host show --allowlist <file>
  *   peachy_host version --lib <peachy library>
  *
- * Grants only change in the allowlist file, by the person at this console. Nothing here reads environment
- * variables. */
+ * Grants only change in the allowlist file, by the person at this console. The outside models run under the same
+ * account as the person, and their own tools can run commands, so "the person at this console" is made real by the
+ * operating system rather than by this program: allow-add, grant, revoke and protect run only elevated (Windows) or
+ * as root (POSIX), and serve refuses an allowlist this account could change, refuses a token file other accounts
+ * could read, and never runs elevated itself. Nothing here reads environment variables. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "peachy/peachy.h"
 #include "pj_base.h"
+#include "pj_guard.h"
 #include "pj_internal.h"
 #include "pj_platform.h"
 #include "pj_sha256.h"
@@ -58,10 +66,69 @@ static const char* opt(int argc, char** argv, const char* name) {
 
 static int usage(void) {
   fprintf(stderr,
-          "usage: peachy_host serve|token-new|allow-add|grant|revoke|show|version [options]\n"
+          "usage: peachy_host serve|token-new|allow-add|grant|revoke|protect|check|show|version [options]\n"
           "       see the comment at the top of tools/peachy_host.c or peachy/README.md\n");
   return 2;
 }
+
+/* ---------------------------------------------------------------- the file guard and elevation (pj_guard.h) */
+
+#if defined(_WIN32)
+#define PJ_ELEVATED_TEXT "an elevated (Run as administrator) prompt"
+#else
+#define PJ_ELEVATED_TEXT "root (sudo)"
+#endif
+
+#if defined(PEACHY_TEST_UNGUARDED)
+/* The end-to-end test's build: every check passes. Never ship this binary. */
+static int guard_file(const char* path, int kind, const char* what) {
+  (void)path;
+  (void)kind;
+  (void)what;
+  return 0;
+}
+static int need_elevated(const char* cmd) {
+  (void)cmd;
+  return 0;
+}
+static int serve_not_elevated(void) { return 0; }
+static int protect_after_write(const char* path) {
+  (void)path;
+  return 0;
+}
+#else
+/* 0 if serve may use the file; otherwise prints why (fixed text, never the file's contents) and returns -1. */
+static int guard_file(const char* path, int kind, const char* what) {
+  pj_file_facts f;
+  char why[96];
+  if (!path) return 0; /* a missing option is reported by whatever needs it */
+  pj_file_facts_get(path, &f);
+  if (pj_guard_check(&f, kind, why, sizeof(why)) == 0) return 0;
+  fprintf(stderr, "peachy_host: %s refused: %s (see \"Protecting the files\" in peachy/configs/README.md)\n", what,
+          why);
+  return -1;
+}
+
+/* Changing grants needs the operating system's say-so, not just a command line any process could type. */
+static int need_elevated(const char* cmd) {
+  if (pj_process_elevated() == 1) return 0;
+  fprintf(stderr, "peachy_host: %s changes who may do what, so it runs only from %s\n", cmd, PJ_ELEVATED_TEXT);
+  return -1;
+}
+
+/* An elevated process could rewrite its own allowlist, so serving from one would undo the guard. */
+static int serve_not_elevated(void) {
+  if (pj_process_elevated() == 0) return 0;
+  fprintf(stderr, "peachy_host: serve never runs elevated or as root: such a process could change its own grants\n");
+  return -1;
+}
+
+static int protect_after_write(const char* path) {
+  if (pj_protect_path(path, PJ_GUARD_ALLOWLIST, 0) == 0) return 0;
+  fprintf(stderr, "peachy_host: the allowlist was written but could not be locked down; run protect\n");
+  return -1;
+}
+#endif
 
 static const peachy_api* load_api(const char* lib_path, void** lib) {
   peachy_get_api_fn get;
@@ -160,6 +227,11 @@ static int cmd_serve(int argc, char** argv) {
   peachy_status st;
   int i;
   uint64_t quiet_since = 0;
+  if (serve_not_elevated() || guard_file(opt(argc, argv, "--token-file"), PJ_GUARD_TOKEN, "the token file") ||
+      guard_file(opt(argc, argv, "--allowlist"), PJ_GUARD_ALLOWLIST, "the allowlist")) {
+    if (api) pj_dl_close(lib);
+    return 2;
+  }
   if (!api) return 1;
 #if defined(_WIN32)
   _setmode(_fileno(stdout), _O_BINARY);
@@ -264,7 +336,18 @@ static int cmd_token_new(int argc, char** argv) {
   }
   hex[64] = 0;
 #if defined(_WIN32)
+  /* make the file empty, close it to this account (plus SYSTEM and Administrators), then write the token */
   f = pj_fopen(path, "wbx");
+  if (f) {
+    int ok = fclose(f) == 0 && pj_protect_path(path, PJ_GUARD_TOKEN, 0) == 0;
+    f = ok ? pj_fopen(path, "wb") : NULL;
+    if (!ok) {
+      fprintf(stderr, "peachy_host: the new token file could not be made private; delete it and try again\n");
+      pj_wipe(raw, sizeof(raw));
+      pj_wipe(hex, sizeof(hex));
+      return 1;
+    }
+  }
 #else
   {
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -277,8 +360,16 @@ static int cmd_token_new(int argc, char** argv) {
     fprintf(stderr, "peachy_host: cannot create the token file (it must not exist yet)\n");
     return 1;
   }
-  fwrite(hex, 1, 64, f);
-  fclose(f);
+  {
+    int ok = fwrite(hex, 1, 64, f) == 64;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok) {
+      pj_wipe(raw, sizeof(raw));
+      pj_wipe(hex, sizeof(hex));
+      fprintf(stderr, "peachy_host: the token file could not be written completely; delete it and try again\n");
+      return 1;
+    }
+  }
   pj_sha256_once(hex, 64, h);
   pj_wipe(raw, sizeof(raw));
   pj_wipe(hex, sizeof(hex));
@@ -325,6 +416,7 @@ static int cmd_allow_add(int argc, char** argv) {
   pj_client* c;
   uint32_t k;
   if (!path || !name || !pj_name_ok(name, 32)) return usage();
+  if (need_elevated("allow-add")) return 1;
   if (load_or_empty(path, &a)) return 1;
   for (k = 0; k < a.n; ++k)
     if (!strcmp(a.c[k].name, name)) {
@@ -361,6 +453,7 @@ static int cmd_allow_add(int argc, char** argv) {
     fprintf(stderr, "peachy_host: cannot write the allowlist\n");
     return 1;
   }
+  if (protect_after_write(path)) return 1;
   printf("added %s (no tools granted yet)\n", name);
   return 0;
 }
@@ -373,6 +466,7 @@ static int cmd_grant(int argc, char** argv, int grant) {
   uint32_t k, bits = 0;
   int i;
   if (!path || !name) return usage();
+  if (need_elevated(grant ? "grant" : "revoke")) return 1;
   if (load_or_empty(path, &a)) return 1;
   for (k = 0; k < a.n; ++k)
     if (!strcmp(a.c[k].name, name)) c = &a.c[k];
@@ -400,7 +494,113 @@ static int cmd_grant(int argc, char** argv, int grant) {
     fprintf(stderr, "peachy_host: cannot write the allowlist\n");
     return 1;
   }
+  if (protect_after_write(path)) return 1;
   printf("%s %s; restart the session for it to take effect\n", grant ? "granted to" : "revoked from", name);
+  return 0;
+}
+
+/* The folder part of path, or -1 if there is none (protect never guesses at the current folder). */
+static int folder_of(const char* path, char* out, size_t cap) {
+  size_t n = strlen(path);
+  while (n && path[n - 1] != '/' && path[n - 1] != '\\') --n;
+  if (n < 2 || n >= cap) return -1; /* no folder, or the root itself */
+  memcpy(out, path, n - 1);
+  out[n - 1] = 0;
+  if (out[0] == 0 || (out[1] == ':' && out[2] == 0)) return -1;
+  return 0;
+}
+
+/* protect locks the whole folder down, so the folder must hold nothing but this allowlist (and its .tmp). */
+#if defined(_WIN32)
+static int folder_holds_only(const char* dir, const char* base) {
+  wchar_t pat[1100];
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  char name[600];
+  int ok = 1;
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir, -1, pat, 1000) <= 0) return 0;
+  wcscat(pat, L"\\*");
+  h = FindFirstFileW(pat, &fd);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  do {
+    if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+    if (WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, (int)sizeof(name), NULL, NULL) <= 0) ok = 0;
+    else if (strcmp(name, base) && !(strncmp(name, base, strlen(base)) == 0 && !strcmp(name + strlen(base), ".tmp")))
+      ok = 0;
+  } while (ok && FindNextFileW(h, &fd));
+  FindClose(h);
+  return ok;
+}
+static int make_folder(const char* dir) { return CreateDirectoryA(dir, NULL) ? 0 : -1; }
+#else
+#include <dirent.h>
+static int folder_holds_only(const char* dir, const char* base) {
+  DIR* d = opendir(dir);
+  struct dirent* e;
+  int ok = 1;
+  if (!d) return 0;
+  while (ok && (e = readdir(d)) != NULL) {
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    if (strcmp(e->d_name, base) &&
+        !(strncmp(e->d_name, base, strlen(base)) == 0 && !strcmp(e->d_name + strlen(base), ".tmp")))
+      ok = 0;
+  }
+  closedir(d);
+  return ok;
+}
+static int make_folder(const char* dir) { return mkdir(dir, 0755) == 0 ? 0 : -1; }
+#endif
+
+static int cmd_protect(int argc, char** argv) {
+  const char* path = opt(argc, argv, "--allowlist");
+  char dir[600];
+  const char* base;
+  FILE* f;
+  if (!path) return usage();
+  if (folder_of(path, dir, sizeof(dir)) != 0) {
+    fprintf(stderr, "peachy_host: give the allowlist's full path, in a folder of its own\n");
+    return 2;
+  }
+  base = path + strlen(dir) + 1;
+  if (need_elevated("protect")) return 1;
+  if (!pj_dir_exists(dir) && make_folder(dir) != 0) {
+    fprintf(stderr, "peachy_host: cannot make the allowlist's folder\n");
+    return 1;
+  }
+  if (!folder_holds_only(dir, base)) {
+    fprintf(stderr, "peachy_host: protect locks the whole folder down, so it must hold only the allowlist; "
+                    "move everything else out first\n");
+    return 1;
+  }
+  if (pj_protect_path(dir, PJ_GUARD_ALLOWLIST, 1) != 0) {
+    fprintf(stderr, "peachy_host: cannot lock the allowlist's folder down\n");
+    return 1;
+  }
+  f = pj_fopen(path, "rb");
+  if (f) {
+    fclose(f);
+    if (pj_protect_path(path, PJ_GUARD_ALLOWLIST, 0) != 0) {
+      fprintf(stderr, "peachy_host: cannot lock the allowlist down\n");
+      return 1;
+    }
+  }
+  printf("protected %s; from a normal prompt, peachy_host check --allowlist <file> confirms serve accepts it\n", dir);
+  return 0;
+}
+
+static int cmd_check(int argc, char** argv) {
+  const char* path = opt(argc, argv, "--allowlist");
+  const char* tok = opt(argc, argv, "--token-file");
+  int bad = 0;
+  if (!path && !tok) return usage();
+  if (serve_not_elevated()) bad = 1;
+  if (tok && guard_file(tok, PJ_GUARD_TOKEN, "the token file")) bad = 1;
+  if (path && guard_file(path, PJ_GUARD_ALLOWLIST, "the allowlist")) bad = 1;
+  if (bad) {
+    printf("REFUSED: serve would not start with these files (the reason is on stderr)\n");
+    return 1;
+  }
+  printf("OK: serve would accept these files\n");
   return 0;
 }
 
@@ -441,6 +641,8 @@ int main(int argc, char** argv) {
   if (!strcmp(argv[1], "allow-add")) return cmd_allow_add(argc, argv);
   if (!strcmp(argv[1], "grant")) return cmd_grant(argc, argv, 1);
   if (!strcmp(argv[1], "revoke")) return cmd_grant(argc, argv, 0);
+  if (!strcmp(argv[1], "protect")) return cmd_protect(argc, argv);
+  if (!strcmp(argv[1], "check")) return cmd_check(argc, argv);
   if (!strcmp(argv[1], "show")) return cmd_show(argc, argv);
   if (!strcmp(argv[1], "version")) return cmd_version(argc, argv);
   return usage();

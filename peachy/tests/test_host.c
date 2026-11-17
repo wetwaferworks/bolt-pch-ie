@@ -1,6 +1,7 @@
 /* peachy_host end to end: token making, allowlist edits, serving PMCP over stdio with the fake game, and
  * peachy_auditcheck on the resulting log. MIT license. */
 #include "pt.h"
+#include "pj_guard.h"
 #include "pj_platform.h"
 
 #if defined(_WIN32)
@@ -34,7 +35,7 @@ static int find_log(const char* dir, char* out, size_t cap) {
 }
 #endif
 
-static const char *g_host, *g_lib, *g_fake, *g_check;
+static const char *g_host, *g_lib, *g_fake, *g_check, *g_guarded;
 static char g_dir[600];
 
 /* Runs a program to completion; collects stdout. */
@@ -78,6 +79,59 @@ static int ask(pj_proc* p, const char* line, char* buf, size_t cap, size_t* have
   }
 }
 
+static int err_has(const char* errlog, const char* what) {
+  char* e = pt_read_file(errlog, NULL);
+  int r = e && strstr(e, what) != NULL;
+  free(e);
+  return r;
+}
+
+/* The real host, with the same scratch files: grants can't change from an ordinary prompt, and serve won't start
+ * on an allowlist this account could rewrite (review 2026-11-16, H1). */
+static void guarded(const char* tok, const char* allow, const char* auditdir, const char* errlog) {
+  char out[4096];
+  size_t before_n = 0, after_n = 0;
+  char *before, *after;
+  int n, elevated = pj_process_elevated();
+  before = pt_read_file(allow, &before_n);
+  if (!elevated) {
+    const char* g[] = {g_guarded, "grant", "--allowlist", allow, "--client", "grok", "plan", "audit_head"};
+    const char* r[] = {g_guarded, "revoke", "--allowlist", allow, "--client", "grok", "propose"};
+    const char* a[] = {g_guarded, "allow-add", "--allowlist", allow, "--client", "muse", "--token-file", tok};
+    const char* p[] = {g_guarded, "protect", "--allowlist", allow};
+    n = run(g, 8, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "runs only from"), "guarded grant refused without elevation");
+    n = run(r, 7, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "runs only from"), "guarded revoke refused without elevation");
+    n = run(a, 8, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "runs only from"), "guarded allow-add refused without elevation");
+    n = run(p, 4, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "runs only from"), "guarded protect refused without elevation");
+  } else {
+    printf("note: running elevated, so the guarded grant refusals are skipped\n");
+  }
+  after = pt_read_file(allow, &after_n);
+  CHECK(before && after && before_n == after_n && !memcmp(before, after, before_n),
+        "the allowlist is byte for byte unchanged");
+  free(before);
+  free(after);
+  {
+    const char* c[] = {g_guarded, "check", "--allowlist", allow, "--token-file", tok};
+    run(c, 6, out, sizeof(out), errlog);
+    CHECK(strstr(out, "REFUSED") && err_has(errlog, "the allowlist refused") &&
+              err_has(errlog, elevated ? "elevated" : "can change it"),
+          "check: a scratch allowlist is refused, and says why");
+  }
+  {
+    const char* s[] = {g_guarded, "serve", "--lib", g_lib, "--allowlist", allow, "--audit-dir", auditdir, "--client",
+                       "grok", "--token-file", tok};
+    n = run(s, 12, out, sizeof(out), errlog);
+    CHECK(n == 0 && (err_has(errlog, "the allowlist refused") || err_has(errlog, "never runs elevated")),
+          "guarded serve refuses a scratch allowlist and serves nothing");
+    CHECK(!err_has(errlog, "PMCP serving"), "guarded serve never started a session");
+  }
+}
+
 int main(int argc, char** argv) {
   char tok[900], allow[900], maze[900], errlog[900], out[8192], sha[80], logp[1200], auditdir[900];
   static char io[1 << 20];
@@ -85,11 +139,12 @@ int main(int argc, char** argv) {
   pj_proc p;
   int n;
   pt_init(argc, argv);
-  if (argc < 6) return 2;
-  g_host = argv[2];
+  if (argc < 7) return 2;
+  g_host = argv[2]; /* the unguarded test build: this test's scratch folder is not a protected place */
   g_lib = argv[3];
   g_fake = argv[4];
   g_check = argv[5];
+  g_guarded = argv[6]; /* the real host, for the refusals */
   pt_newdir(g_dir, sizeof(g_dir), "host");
   snprintf(tok, sizeof(tok), "%s/grok.token", g_dir);
   snprintf(allow, sizeof(allow), "%s/allow.json", g_dir);
@@ -210,5 +265,6 @@ int main(int argc, char** argv) {
       free(e);
     }
   }
+  guarded(tok, allow, auditdir, errlog);
   return pt_done("peachy_host_e2e");
 }

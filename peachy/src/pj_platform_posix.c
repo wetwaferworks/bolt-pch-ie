@@ -2,6 +2,7 @@
 #if !defined(_WIN32)
 #define _GNU_SOURCE 1
 #include "pj_platform.h"
+#include "pj_guard.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -272,6 +273,75 @@ void pj_thread_join(pj_thread* t) {
   if (!t->started) return;
   pthread_join((pthread_t)t->t, NULL);
   t->started = 0;
+}
+
+/* ---------------------------------------------------------------- file guard (see pj_guard.h) */
+
+int pj_process_elevated(void) { return geteuid() == 0 ? 1 : 0; }
+
+/* Could this process change the entry at p (it owns it, so it could chmod it, or it may write to it)? */
+static int posix_changeable(const char* p, const struct stat* st) {
+  return st->st_uid == geteuid() || faccessat(AT_FDCWD, p, W_OK, AT_EACCESS) == 0;
+}
+
+void pj_file_facts_get(const char* path, pj_file_facts* f) {
+  char abs[4096];
+  struct stat st;
+  size_t n;
+  memset(f, 0, sizeof(*f));
+  f->elevated = pj_process_elevated();
+  if (!path || !path[0]) return;
+  if (path[0] == '/') {
+    if (strlen(path) >= sizeof(abs)) return;
+    memcpy(abs, path, strlen(path) + 1);
+  } else {
+    size_t c;
+    if (!getcwd(abs, sizeof(abs))) return;
+    c = strlen(abs);
+    if (c + 1 + strlen(path) >= sizeof(abs)) return;
+    abs[c] = '/';
+    memcpy(abs + c + 1, path, strlen(path) + 1);
+  }
+  /* the folders above are walked as text, so "." and ".." components and doubled slashes are refused outright */
+  if (strstr(abs, "//")) return;
+  {
+    const char* q = abs;
+    while (*q) {
+      const char* e;
+      while (*q == '/') ++q;
+      e = q;
+      while (*e && *e != '/') ++e;
+      if ((e - q == 1 && q[0] == '.') || (e - q == 2 && q[0] == '.' && q[1] == '.')) return;
+      q = e;
+    }
+  }
+  if (lstat(abs, &st) != 0) return;
+  f->regular = S_ISREG(st.st_mode);
+  f->link_in_path = S_ISLNK(st.st_mode);
+  f->changeable = f->elevated || posix_changeable(abs, &st);
+  f->others_can_read = st.st_uid != geteuid() || (st.st_mode & 077) != 0;
+  n = strlen(abs);
+  while (n > 1 && abs[n - 1] == '/') abs[--n] = 0;
+  for (;;) {
+    char* slash = strrchr(abs, '/');
+    if (!slash) return;
+    if (slash == abs) slash[1] = 0; /* the root itself */
+    else *slash = 0;
+    if (lstat(abs, &st) != 0) return;
+    if (S_ISLNK(st.st_mode)) f->link_in_path = 1;
+    else if (!S_ISDIR(st.st_mode)) return;
+    if (f->elevated || posix_changeable(abs, &st)) f->path_changeable = 1;
+    if (abs[1] == 0) break;
+  }
+  f->known = 1;
+}
+
+int pj_protect_path(const char* path, int kind, int is_dir) {
+  if (!path) return -1;
+  if (kind == PJ_GUARD_TOKEN) return chmod(path, 0600) == 0 ? 0 : -1;
+  if (kind != PJ_GUARD_ALLOWLIST || geteuid() != 0) return -1;
+  if (chown(path, 0, 0) != 0) return -1;
+  return chmod(path, is_dir ? 0755 : 0644) == 0 ? 0 : -1;
 }
 #else
 typedef int pj_platform_posix_unused;

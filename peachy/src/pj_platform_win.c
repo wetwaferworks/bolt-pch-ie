@@ -10,14 +10,17 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <aclapi.h>
 #include <bcrypt.h>
 #include <process.h>
 #include <share.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <wchar.h>
 
 #include "pj_platform.h"
+#include "pj_guard.h"
 
 uint64_t pj_mono_ns(void) {
   LARGE_INTEGER f, c;
@@ -327,6 +330,210 @@ void pj_thread_join(pj_thread* t) {
   WaitForSingleObject((HANDLE)t->h, INFINITE);
   CloseHandle((HANDLE)t->h);
   t->started = 0;
+}
+
+/* ---------------------------------------------------------------- file guard (see pj_guard.h) */
+
+typedef struct win_sids {
+  HANDLE imp; /* impersonation copy of this process's token, for AccessCheck */
+  BYTE user_buf[128];
+  PSID user;
+  BYTE system[SECURITY_MAX_SID_SIZE];
+  BYTE admins[SECURITY_MAX_SID_SIZE];
+} win_sids;
+
+static int win_sids_open(win_sids* w) {
+  HANDLE tok = NULL;
+  DWORD len = 0, sz;
+  int ok = 0;
+  memset(w, 0, sizeof(*w));
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &tok)) return -1;
+  if (GetTokenInformation(tok, TokenUser, w->user_buf, sizeof(w->user_buf), &len) &&
+      DuplicateToken(tok, SecurityImpersonation, &w->imp)) {
+    w->user = ((TOKEN_USER*)w->user_buf)->User.Sid;
+    sz = sizeof(w->system);
+    ok = CreateWellKnownSid(WinLocalSystemSid, NULL, w->system, &sz) != 0;
+    sz = sizeof(w->admins);
+    ok = ok && CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, w->admins, &sz) != 0;
+  }
+  CloseHandle(tok);
+  if (!ok && w->imp) {
+    CloseHandle(w->imp);
+    w->imp = NULL;
+  }
+  return ok ? 0 : -1;
+}
+
+static void win_sids_close(win_sids* w) {
+  if (w->imp) CloseHandle(w->imp);
+  w->imp = NULL;
+}
+
+int pj_process_elevated(void) {
+  HANDLE tok = NULL;
+  TOKEN_ELEVATION e;
+  DWORD len = 0;
+  int r = 1; /* unknown counts as elevated */
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return 1;
+  if (GetTokenInformation(tok, TokenElevation, &e, sizeof(e), &len)) r = e.TokenIsElevated ? 1 : 0;
+  CloseHandle(tok);
+  return r;
+}
+
+/* What this process's token may do to p, by the file's own security descriptor. 0 on success. */
+static int win_granted(const wchar_t* p, const win_sids* w, ACCESS_MASK* granted) {
+  PSECURITY_DESCRIPTOR sd = NULL;
+  GENERIC_MAPPING gm = {FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS};
+  union {
+    PRIVILEGE_SET ps;
+    BYTE b[256];
+  } priv;
+  DWORD pl = sizeof(priv);
+  BOOL status = FALSE;
+  int rc = -1;
+  *granted = 0;
+  if (GetNamedSecurityInfoW(p, SE_FILE_OBJECT,
+                            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, NULL,
+                            NULL, NULL, NULL, &sd) != ERROR_SUCCESS)
+    return -1;
+  if (AccessCheck(sd, w->imp, MAXIMUM_ALLOWED, &gm, &priv.ps, &pl, granted, &status)) rc = 0;
+  LocalFree(sd);
+  return rc;
+}
+
+static int win_sid_is_ours(PSID sid, const win_sids* w) {
+  return EqualSid(sid, w->user) || EqualSid(sid, (PSID)w->system) || EqualSid(sid, (PSID)w->admins);
+}
+
+/* 1 if an account other than ours, SYSTEM and Administrators could read p (or re-permission it), 0 if not, -1 if
+ * the descriptor could not be read. A missing DACL lets everyone in; an allow entry of a kind we don't parse
+ * counts as someone else. */
+static int win_others_can_read(const wchar_t* p, const win_sids* w) {
+  PSECURITY_DESCRIPTOR sd = NULL;
+  PSID owner = NULL;
+  PACL dacl = NULL;
+  ACL_SIZE_INFORMATION info;
+  DWORD k;
+  memset(&info, 0, sizeof(info));
+  int r = 0;
+  const ACCESS_MASK reads = FILE_READ_DATA | GENERIC_READ | GENERIC_ALL | WRITE_DAC | WRITE_OWNER | MAXIMUM_ALLOWED;
+  if (GetNamedSecurityInfoW(p, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, NULL,
+                            &dacl, NULL, &sd) != ERROR_SUCCESS)
+    return -1;
+  if (!owner || !win_sid_is_ours(owner, w) || !dacl ||
+      !GetAclInformation(dacl, &info, sizeof(info), AclSizeInformation))
+    r = 1;
+  for (k = 0; r == 0 && k < info.AceCount; ++k) {
+    ACE_HEADER* h = NULL;
+    if (!GetAce(dacl, k, (LPVOID*)&h) || !h) {
+      r = 1;
+      break;
+    }
+    if (h->AceFlags & INHERIT_ONLY_ACE) continue;
+    if (h->AceType == ACCESS_DENIED_ACE_TYPE) continue;
+    if (h->AceType != ACCESS_ALLOWED_ACE_TYPE) {
+      r = 1;
+      break;
+    }
+    {
+      ACCESS_ALLOWED_ACE* a = (ACCESS_ALLOWED_ACE*)h;
+      if (!win_sid_is_ours((PSID)&a->SidStart, w) && (a->Mask & reads)) r = 1;
+    }
+  }
+  LocalFree(sd);
+  return r;
+}
+
+void pj_file_facts_get(const char* path, pj_file_facts* f) {
+  wchar_t* wp = widen(path);
+  wchar_t full[1024];
+  DWORD n, attr;
+  win_sids w;
+  ACCESS_MASK g;
+  const ACCESS_MASK file_change =
+      FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | DELETE | WRITE_DAC | WRITE_OWNER;
+  /* DELETE on a folder lets it be renamed away; the drive root can't be, so there only the rest count */
+  const ACCESS_MASK dir_change = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
+  const ACCESS_MASK root_change = FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER;
+  int o;
+  memset(f, 0, sizeof(*f));
+  f->elevated = pj_process_elevated();
+  if (!wp) return;
+  n = GetFullPathNameW(wp, (DWORD)(sizeof(full) / sizeof(full[0])), full, NULL);
+  free(wp);
+  /* only plain drive paths (C:\...): no UNC, no \\?\ device paths */
+  if (n == 0 || n >= sizeof(full) / sizeof(full[0]) || n < 4 || full[1] != L':' || full[2] != L'\\') return;
+  if (win_sids_open(&w) != 0) return;
+  attr = GetFileAttributesW(full);
+  if (attr == INVALID_FILE_ATTRIBUTES) goto out;
+  f->regular = !(attr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE));
+  if (attr & FILE_ATTRIBUTE_REPARSE_POINT) f->link_in_path = 1;
+  if (win_granted(full, &w, &g) != 0) goto out;
+  f->changeable = f->elevated || (g & file_change) != 0;
+  o = win_others_can_read(full, &w);
+  if (o < 0) goto out;
+  f->others_can_read = o;
+  /* every folder above: no reparse points, and nothing that would let this account delete, rename or
+   * re-permission what's below it */
+  for (;;) {
+    wchar_t* slash = wcsrchr(full, L'\\');
+    if (!slash || slash < full + 2) goto out;
+    if (slash == full + 2) slash[1] = 0; /* the drive root, C:\ */
+    else *slash = 0;
+    attr = GetFileAttributesW(full);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) goto out;
+    if (attr & FILE_ATTRIBUTE_REPARSE_POINT) f->link_in_path = 1;
+    if (win_granted(full, &w, &g) != 0) goto out;
+    if (f->elevated || (g & (full[3] == 0 ? root_change : dir_change))) f->path_changeable = 1;
+    if (full[3] == 0) break;
+  }
+  f->known = 1;
+out:
+  win_sids_close(&w);
+}
+
+int pj_protect_path(const char* path, int kind, int is_dir) {
+  wchar_t* wp = widen(path);
+  win_sids w;
+  EXPLICIT_ACCESS_W ea[3];
+  PACL acl = NULL;
+  DWORD inherit = is_dir ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
+  SECURITY_INFORMATION si = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+  int k, rc = -1;
+  if (!wp) return -1;
+  if (win_sids_open(&w) != 0) {
+    free(wp);
+    return -1;
+  }
+  memset(ea, 0, sizeof(ea));
+  for (k = 0; k < 3; ++k) {
+    ea[k].grfAccessMode = SET_ACCESS;
+    ea[k].grfInheritance = inherit;
+    ea[k].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    ea[k].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+  }
+  ea[0].grfAccessPermissions = GENERIC_ALL;
+  ea[0].Trustee.ptstrName = (LPWSTR)w.system;
+  ea[1].grfAccessPermissions = GENERIC_ALL;
+  ea[1].Trustee.ptstrName = (LPWSTR)w.admins;
+  ea[2].Trustee.ptstrName = (LPWSTR)w.user;
+  if (kind == PJ_GUARD_ALLOWLIST) {
+    ea[2].grfAccessPermissions = GENERIC_READ | GENERIC_EXECUTE;
+    si |= OWNER_SECURITY_INFORMATION;
+  } else if (kind == PJ_GUARD_TOKEN) {
+    ea[2].grfAccessPermissions = GENERIC_READ | GENERIC_WRITE | DELETE;
+  } else {
+    goto out;
+  }
+  if (SetEntriesInAclW(3, ea, NULL, &acl) != ERROR_SUCCESS) goto out;
+  if (SetNamedSecurityInfoW(wp, SE_FILE_OBJECT, si, kind == PJ_GUARD_ALLOWLIST ? (PSID)w.admins : NULL, NULL, acl,
+                            NULL) == ERROR_SUCCESS)
+    rc = 0;
+out:
+  if (acl) LocalFree(acl);
+  win_sids_close(&w);
+  free(wp);
+  return rc;
 }
 #else
 typedef int pj_platform_win_unused;
