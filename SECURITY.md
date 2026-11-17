@@ -36,7 +36,7 @@ A code review of the Peachy MCP server and the MiniJson reader, by Cortana, foun
 
 The high finding was that any program running under the user's account could grant itself PMCP tools. Changing grants now needs an administrator, and `serve` refuses an allowlist its account could change. All clients run under one shared account by choice, so a client can read another client's token, but it can only use the grants given to that client. `actuate` stays refused everywhere.
 
-The details are in [CHANGELOG.md](CHANGELOG.md) under Unreleased.
+The details are in [CHANGELOG.md](CHANGELOG.md) under 0.1.2.
 
 ## Reporting
 

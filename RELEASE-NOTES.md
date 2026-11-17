@@ -1,6 +1,10 @@
 # Release notes
 
-## Unreleased
+## 0.1.2
+
+This release is a security hardening pass. It comes from our first security review, by Gizmo (ChatGPT Luna 6), and a second hardening review by Helia (Google Hydrogen), cross-checked by Luna (ChatGPT Luna 6). Every finding was checked against the code and fixed, and each fix has its own tests. No official or neutrality hash moved: the maze H_world, the B1 actions and the gauntlet H_bolt are the same as before.
+
+### Peachy (PMCP) and MiniJson review
 
 Security fixes from Cortana's overnight code review of Peachy (PMCP) and MiniJson, on Nov 16, 2026. No official hash moved.
 
@@ -14,10 +18,6 @@ Security fixes from Cortana's overnight code review of Peachy (PMCP) and MiniJso
 - **No locks in the ternary path,** and its research path refuses subnormal scales like the main path.
 
 These build on our first security review, by Gizmo (ChatGPT Luna 6), and the 0.1.2 hardening review by Helia (Google Hydrogen).
-
-## 0.1.2
-
-This release is a security hardening pass. It comes from our first security review, by Gizmo (ChatGPT Luna 6), and a second hardening review by Helia (Google Hydrogen), cross-checked by Luna (ChatGPT Luna 6). Every finding was checked against the code and fixed, and each fix has its own tests. No official or neutrality hash moved: the maze H_world, the B1 actions and the gauntlet H_bolt are the same as before.
 
 ### What changed for you
 

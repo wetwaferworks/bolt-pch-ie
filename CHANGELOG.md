@@ -2,7 +2,7 @@
 
 All notable changes to Bolt PCHIE are listed here, newest first.
 
-## Unreleased
+## 0.1.2
 
 ### Security: overnight review
 
@@ -27,8 +27,6 @@ The same review's eight lower-severity findings:
 - **Setup uses one shared account for every client.** The PMCP setup notes now describe that choice and its trade-off: clients can read each other's tokens but only use their own grants.
 
 The eighth finding (L5) was in the clean-room weight converter, which isn't part of this tree; it was fixed there.
-
-## 0.1.2
 
 ### Added
 
