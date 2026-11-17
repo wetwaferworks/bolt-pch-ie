@@ -113,7 +113,7 @@ int pj_audit_verify(const char* path, pj_audit_report* r) {
   int rc = 0;
   memset(r, 0, sizeof(*r));
   memset(prev, 0, sizeof(prev));
-  f = pj_fopen(path, "rb");
+  f = pj_fopen_read_shared(path);
   if (!f) return -1;
   line = (char*)malloc(PJ_AUDIT_MAX_LINE + 2);
   if (!line) {

@@ -83,6 +83,17 @@ FILE* pj_fopen(const char* p, const char* mode) {
   return f;
 }
 
+FILE* pj_fopen_read_shared(const char* p) {
+  wchar_t* wp = widen(p);
+  FILE* f = NULL;
+  /* Read-only and sharing everything, so the resume check and peachy_auditcheck can re-read an audit log that a
+   * session still holds open for writing (that handle denies other writers, which a reader asking to deny writers
+   * would collide with). Every other open keeps denying writers. */
+  if (wp) f = _wfsopen(wp, L"rb", _SH_DENYNO);
+  free(wp);
+  return f;
+}
+
 int pj_dir_exists(const char* p) {
   wchar_t* wp = widen(p);
   DWORD a;

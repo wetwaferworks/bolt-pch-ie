@@ -27,8 +27,9 @@ Interface status: **alpha** (`PEACHY_ABI_MAJOR 0`). The interface may change bet
 - **Hard ceilings.** Each session takes one memory block when it opens (8 MiB by default) and never grows past it.
   Every message, tool call, game round trip and planning call has a deadline.
 - **One safe state.** Anything unexpected ends the same way: nothing moves, `player_release` goes to the game, the
-  reason is logged, and the session is held. Only the person at the host console can resume, and resume first
-  re-checks the audit log, the client and the game.
+  reason is logged, and the session is held. Only the person at the host console can resume. Resume first re-reads
+  the audit log from disk and requires it to match the session record for record and hash for hash, refuses a
+  client that was cut off, and re-checks the game. It does not re-read the allowlist.
 
 ## Tools
 

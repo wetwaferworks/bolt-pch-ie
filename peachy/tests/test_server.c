@@ -492,6 +492,37 @@ static void holds(void) {
   A->status(s, &st);
   CHECK(st.held && has(st.hold_reason, "console"), "console hold reason");
   A->console(s, "resume", rep, sizeof(rep));
+  /* a log edited on disk while held blocks resume (review 2026-11-16). The edit can only be staged on POSIX: on
+   * Windows the session's deny-write share mode stops another writer while the log is open, so check that instead. */
+#if !defined(_WIN32)
+  {
+    char ap[600];
+    size_t n = 0;
+    char* txt;
+    CHECK(A->console(s, "hold", rep, sizeof(rep)) == PEACHY_OK, "hold before tamper");
+    snprintf(ap, sizeof(ap), "%s", pj_test_audit_path(s));
+    txt = pt_read_file(ap, &n);
+    if (txt && n > 2) {
+      char* last = txt + n - 2;
+      while (last > txt && *last != '\n') --last; /* drop the newest record */
+      pt_write_file(ap, txt, (size_t)(last - txt) + 1);
+      CHECK(A->console(s, "resume", rep, sizeof(rep)) == PEACHY_E_HELD && has(rep, "audit log on disk"),
+            "resume refused when the audit log on disk was cut short");
+      pt_write_file(ap, txt, n); /* put it back so the rest of the test runs */
+    }
+    free(txt);
+    CHECK(A->console(s, "resume", rep, sizeof(rep)) == PEACHY_OK, "resume once the log matches again");
+  }
+#else
+  {
+    /* Windows: the open log refuses a second writer, and resume can still re-read it */
+    FILE* w2 = fopen(pj_test_audit_path(s), "r+b");
+    CHECK(w2 == NULL, "a second writer can't open the live audit log");
+    if (w2) fclose(w2);
+    CHECK(A->console(s, "hold", rep, sizeof(rep)) == PEACHY_OK, "hold before the re-read");
+    CHECK(A->console(s, "resume", rep, sizeof(rep)) == PEACHY_OK, "resume re-reads the log while it is open");
+  }
+#endif
   /* audit write failure holds and blocks resume */
   A->status(s, &st);
   pj_test_fail_audit_after(s, st.audit_length + 2);

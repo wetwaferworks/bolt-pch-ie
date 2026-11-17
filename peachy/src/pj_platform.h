@@ -14,6 +14,8 @@ void pj_local_time(char* out, size_t cap);          /* 2026-11-16T19:30:01-05:00
 void pj_compact_time(char* out, size_t cap);        /* 20261116-193001 */
 uint32_t pj_pid(void);
 FILE* pj_fopen(const char* utf8_path, const char* mode);
+/* Read-only open that shares with a writer already holding the file (Windows); plain fopen "rb" elsewhere. */
+FILE* pj_fopen_read_shared(const char* utf8_path);
 int pj_dir_exists(const char* utf8_path);
 int pj_replace_file(const char* tmp_path, const char* final_path); /* 0 on success */
 

@@ -1674,6 +1674,16 @@ static peachy_status console_resume(PeachySession* s, pj_w* w) {
     pj_w_cstr(w, "cannot resume: the client was cut off; start a new session");
     return PEACHY_E_HELD;
   }
+  {
+    /* re-derive the chain from the file and require it to end exactly where this session thinks it ends: a log
+     * that was truncated, edited or replaced while held must not be resumed past */
+    pj_audit_report rep;
+    if (pj_audit_verify(s->audit.path, &rep) != 0 || rep.records != s->audit.seq ||
+        !pj_ct_equal(rep.head, s->audit.head, 32)) {
+      pj_w_cstr(w, "cannot resume: the audit log on disk does not match this session");
+      return PEACHY_E_HELD;
+    }
+  }
   if (s->game_configured) {
     int32_t pl;
     uint64_t dl = now(s) + (uint64_t)s->game_ms * 1000000ull;

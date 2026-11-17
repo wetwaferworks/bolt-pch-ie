@@ -81,6 +81,7 @@ void pj_compact_time(char* out, size_t cap) {
 uint32_t pj_pid(void) { return (uint32_t)getpid(); }
 
 FILE* pj_fopen(const char* p, const char* mode) { return fopen(p, mode); }
+FILE* pj_fopen_read_shared(const char* p) { return fopen(p, "rb"); }
 
 int pj_dir_exists(const char* p) {
   struct stat st;
