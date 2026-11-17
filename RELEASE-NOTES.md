@@ -6,7 +6,14 @@ Security fixes from Cortana's overnight code review of Peachy (PMCP) and MiniJso
 
 - **Grants need an administrator.** `peachy_host allow-add`, `grant`, `revoke` and `protect` run only from an elevated prompt (`sudo` on Linux). `serve` runs from a normal prompt and refuses an allowlist your account could change, or a token other accounts could read. Run `peachy_host protect` once, elevated, then `peachy_host check` to confirm. See `peachy/configs/README.md`.
 - **Hard ceilings held.** Every inbound PMCP message is rate limited, the audit log stops at 256 MiB, a zero-mantissa number costs no CPU, and MiniJson never allocates more than 64 MiB for one parse.
-- **Failing safe held.** A client can always ask to hold, and resume refuses an audit log that no longer matches the session.
+- **Failing safe held.** A client can always ask to hold, resume refuses an audit log that no longer matches the session, and an audit record too large to write holds the session instead of being skipped.
+- **Fewer ways to lock yourself out.** Proposals refused at the legal-move check no longer use up the action budget.
+- **The game gets only its own handles on Windows,** so it can't reach Peachy's pipes to the MCP client.
+- **`peachy_host allow-add` is strict.** A malformed `--rate`, `--burst`, `--transport` or `--max-mode` is refused with a message, and nothing is written.
+- **One shared account.** Every PMCP client runs under the same account; grants, not accounts, limit each one. See `peachy/configs/README.md` for the trade-off.
+- **No locks in the ternary path,** and its research path refuses subnormal scales like the main path.
+
+These build on our first security review, by Gizmo (ChatGPT Luna 6), and the 0.1.2 hardening review by Helia (Google Hydrogen).
 
 ## 0.1.2
 

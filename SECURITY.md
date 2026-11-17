@@ -30,6 +30,14 @@ The pass covers CUDA backend checks (row limits, scratch sizing, and copy-mirror
 
 The full list is in [CHANGELOG.md](CHANGELOG.md) and [RELEASE-NOTES.md](RELEASE-NOTES.md).
 
+## Peachy (PMCP) review, November 16, 2026
+
+A code review of the Peachy MCP server and the MiniJson reader, by Cortana, found one high, five medium and eight low issues. It built on our first security review, by Gizmo (ChatGPT Luna 6). Each finding was checked against the code and fixed or documented, and each code fix has its own tests. None of them moves a run hash.
+
+The high finding was that any program running under the user's account could grant itself PMCP tools. Changing grants now needs an administrator, and `serve` refuses an allowlist its account could change. All clients run under one shared account by choice, so a client can read another client's token, but it can only use the grants given to that client. `actuate` stays refused everywhere.
+
+The details are in [CHANGELOG.md](CHANGELOG.md) under Unreleased.
+
 ## Reporting
 
 Please report security problems privately to the maintainer before you open a public issue.

@@ -15,6 +15,19 @@ These fixes come from Cortana's overnight code review of the Peachy (PMCP) and M
 - **MiniJson has a hard memory ceiling (M4).** A 16 MiB line could reach 427 MiB before a cap refused it. Every buffer is now charged against a 64 MiB budget before it is allocated, and the duplicate-key check sorts once per object instead of comparing every pair.
 - **A client can always ask to hold (M5).** `hold` was rate limited, so a client that had spent its budget couldn't stop. It is never rate limited now and costs nothing.
 
+The same review's eight lower-severity findings:
+
+- **Refused proposals don't spend the action budget (L2).** The budget was charged before the legal-move check, so a model proposing moves it couldn't make locked itself out. It's now charged only once a proposal passes that check.
+- **No hidden lock in the ternary CPU check (L3).** The cached CPU tier used a function-local static, which C++ guards with a lock. It's now a lock-free atomic. Results are bit-identical.
+- **The ternary research path refuses subnormal scales (L4),** as the main path already did, so no result depends on flush-to-zero settings.
+- **An audit record that doesn't fit holds the session (L6).** Such a record used to be skipped quietly. Now the session holds and can't be resumed, because the log would have a gap.
+- **On Windows the game inherits only its own handles (L7).** It's started with an explicit list of its stdin, stdout and log, so it can't pick up Peachy's pipes to the MCP client.
+- **`peachy_host allow-add` checks every option (L8).** `--rate` and `--burst` must be whole numbers in range, and `--transport` and `--max-mode` must be listed values. Nothing is written on a refusal. Token files were already made private and their writes checked by the H1 fix.
+- **Planning time is bounded by the node budget (L1).** `max_plan_ms` is checked after the planner returns. The docs now say that the node budget is the real ceiling, and that a watchdog is needed before `actuate` exists.
+- **Setup uses one shared account for every client.** The PMCP setup notes now describe that choice and its trade-off: clients can read each other's tokens but only use their own grants.
+
+The eighth finding (L5) was in the clean-room weight converter, which isn't part of this tree; it was fixed there.
+
 ## 0.1.2
 
 ### Added
