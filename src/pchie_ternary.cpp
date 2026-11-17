@@ -3,6 +3,7 @@
 #include "pchie_ternary_internal.h"
 #include "pchie/pchie_q4_det.h"   // round_half_even_f32 (the repo's pinned rounding rule)
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
@@ -448,10 +449,19 @@ static Tier probe_hw_tier() noexcept { return Tier::Scalar; }
 
 // The probe runs CPUID and XGETBV (or getauxval), which are slow and, under some hypervisors, trap: about a
 // microsecond per call on Windows. dot_row asks for every row, so probe once. The answer cannot change while the
-// process runs, and a function-local static is initialised exactly once even with several threads.
+// process runs. A function-local static would do this, but C++ guards its first-use initialisation with a hidden
+// lock (__cxa_guard_acquire / _Init_thread_header), which the no-locks rule forbids. Instead a relaxed atomic
+// caches the answer: two threads arriving together may both probe, they get the same value, and the store is
+// idempotent. 0 means "not probed yet", so the cache holds Tier + 1.
+static_assert(std::atomic<int>::is_always_lock_free, "the tier cache must be a plain atomic, never a lock");
+static std::atomic<int> g_hw_tier_plus1{0};
 static Tier hw_tier() noexcept {
-    static const Tier cached = probe_hw_tier();
-    return cached;
+    int v = g_hw_tier_plus1.load(std::memory_order_relaxed);
+    if (v == 0) {
+        v = int(probe_hw_tier()) + 1;
+        g_hw_tier_plus1.store(v, std::memory_order_relaxed);
+    }
+    return Tier(v - 1);
 }
 
 bool tier_supported(Tier t) noexcept {
