@@ -55,10 +55,13 @@ What this covers, and what it doesn't:
 
 - It stops a client from granting itself tools through Peachy. A client can't edit the allowlist, and it can't run
   `grant` or `allow-add` without an administrator saying yes.
-- It doesn't keep clients apart from each other while they all run as your account. Each one can read every token
-  your account can, and connect as another client, though only with the grants you gave that client. To give each
-  client a token the others can't read, run each client under its own Windows account, and give only that account
-  read access to its token file. `serve` then checks that the token is private to the account running it.
+- It doesn't keep clients apart from each other. The supported setup runs every client under one shared account, by
+  choice: it keeps setup simple, and the grants, not the account, are what limit each client. The trade-off is that
+  any client can read every client's token and connect as another client, though only with the grants you gave that
+  client. Keep each client's grants as narrow as its job, and `actuate` stays refused for all of them. (Running each
+  client under its own account, with only that account able to read its token, would close this gap. `serve`
+  already checks that a token is private to the account running it, so that remains possible later without code
+  changes.)
 - A client with a shell can still run programs of its own, including a copy of Peachy built without these checks.
   Keep `peachy_host.exe` and `peachy.dll` where your account can't replace them (for example
   `C:/Program Files/PMCP`), so the server each profile starts is the real one. `actuate` stays refused everywhere.
