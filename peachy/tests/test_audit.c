@@ -195,6 +195,25 @@ static void audit_failures(void) {
     CHECK(pj_audit_append(&a, 1, big, sizeof(big)) != 0 && a.failed, "oversized record fails safe");
     pj_audit_close(&a);
   }
+  /* the log has a hard size ceiling: a record that would cross it is refused whole, and nothing after it is
+   * written (review 2026-11-16) */
+  {
+    uint64_t one;
+    pj_audit_report rep;
+    char path[600];
+    CHECK(pj_audit_open(&a, dir, "cap") == 0, "open cap");
+    CHECK(pj_audit_append(&a, 1000, "\"what\":\"x\"", 10) == 0, "first record");
+    one = a.bytes;
+    CHECK(one > 0, "bytes are counted");
+    a.bytes = PJ_AUDIT_MAX_BYTES - one; /* pretend the log is one record short of the ceiling */
+    CHECK(pj_audit_append(&a, 2000, "\"what\":\"x\"", 10) == 0 && a.bytes == PJ_AUDIT_MAX_BYTES,
+          "a record that lands exactly on the ceiling is written");
+    CHECK(pj_audit_append(&a, 3000, "", 0) != 0 && a.failed, "the next record is refused at the ceiling");
+    CHECK(pj_audit_append(&a, 4000, "", 0) != 0, "and every one after it");
+    snprintf(path, sizeof(path), "%s", a.path);
+    pj_audit_close(&a);
+    CHECK(pj_audit_verify(path, &rep) == 0 && rep.records == 2, "the log on disk stops whole at the ceiling");
+  }
 }
 
 int main(int argc, char** argv) {

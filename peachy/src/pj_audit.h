@@ -16,8 +16,12 @@ typedef struct pj_audit {
   uint8_t head[32];
   int failed;
   uint64_t fail_after; /* tests: fail the write of this record number (0 = never) */
+  uint64_t bytes;      /* bytes written so far; the log never grows past PJ_AUDIT_MAX_BYTES */
   char path[512];
 } pj_audit;
+
+/* Hard ceiling on one session's audit log. Past it, appends fail and the session holds (H_AUDIT). */
+#define PJ_AUDIT_MAX_BYTES (256ull << 20)
 
 /* Creates a new file in dir; never overwrites an existing one. 0 on success. */
 int pj_audit_open(pj_audit* a, const char* dir, const char* session_name);

@@ -16,6 +16,8 @@
 #define PJ_GAME_VALUES 16384u
 #define PJ_PROPOSALS 256u
 #define PJ_MAX_R 4
+#define PJ_MSG_RATE 512u   /* inbound messages per second, any method */
+#define PJ_MSG_BURST 8192u
 #define PJ_MAX_N (2 * PJ_MAX_R + 1)
 
 enum {
@@ -88,6 +90,7 @@ struct PeachySession {
   char* abody;
   pj_audit audit;
   uint64_t bucket, bucket_t;
+  uint64_t mbucket, mbucket_t; /* every inbound message, PJ_MSG_RATE per second, PJ_MSG_BURST burst */
   uint64_t actions_used;
   uint64_t n_in, n_out, n_bad, n_prop, n_rej;
   volatile uint64_t pub_in, pub_out, pub_bad, pub_prop, pub_rej, pub_audit_len, pub_head[4], pub_arena;
@@ -462,6 +465,15 @@ static void refill(PeachySession* s) {
   s->bucket += el * s->rate / 1000000u;
   if (s->bucket > cap) s->bucket = cap;
   s->bucket_t = t;
+}
+
+static uint64_t msg_refill(PeachySession* s) {
+  uint64_t t = now(s), el = t - s->mbucket_t, cap = (uint64_t)PJ_MSG_BURST * 1000u;
+  if (el > 10000000000ull) el = 10000000000ull;
+  s->mbucket += el * PJ_MSG_RATE / 1000000u;
+  if (s->mbucket > cap) s->mbucket = cap;
+  s->mbucket_t = t;
+  return s->mbucket;
 }
 
 static void tool_status(PeachySession* s, const rpc_id* id) {
@@ -1204,6 +1216,17 @@ static void handle_message(PeachySession* s, const char* line, size_t len) {
     bad_message(s);
     return;
   }
+  /* Every inbound message costs a token from a second, more generous bucket (tools/call also pays the
+   * per-client tool bucket below). Without this a client can send pings, notifications or stray responses as
+   * fast as the pipe allows, and each one writes an audit record: tens of MB per second with no ceiling. Over
+   * the message rate counts as a bad message, so a flood ends in a cut-off after bad_message_limit lines. */
+  if (msg_refill(s) < 1000u) {
+    audit_in(s, sha, vm < 0 ? "[response]" : method_label(d, vm), "", "refused", "message rate exceeded");
+    if (id.kind && vm >= 0) reply_error(s, &id, -32000, "message rate exceeded: slow down");
+    bad_message(s);
+    return;
+  }
+  s->mbucket -= 1000u;
   if (vm < 0) { /* a response from the client; Peachy never sends requests to it */
     audit_in(s, sha, "[response]", "", "ignored", "Peachy sends no requests to clients");
     return;
@@ -1511,6 +1534,8 @@ static peachy_status PEACHY_CALL api_session_open(const peachy_session_config* c
 
   s->bucket = (uint64_t)s->burst * 1000u;
   s->bucket_t = now(s);
+  s->mbucket = (uint64_t)PJ_MSG_BURST * 1000u;
+  s->mbucket_t = s->bucket_t;
 
   if (cfg->planner_kind != PEACHY_PLANNER_NONE) {
     if (pj_planner_open(&s->planner, cfg, 2u * s->radius_max + 1u, s->search_budget) != 0) {

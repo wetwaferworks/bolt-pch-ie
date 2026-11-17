@@ -67,11 +67,13 @@ int pj_audit_append(pj_audit* a, uint64_t mono_ns, const char* body, size_t body
   pj_w_raw(&w, " ", 1);
   pj_w_hex(&w, h, 32);
   pj_w_raw(&w, "\n", 1);
-  if (w.overflow || fwrite(line, 1, w.len, a->f) != w.len || fflush(a->f) != 0) {
+  if (w.overflow || a->bytes + w.len > PJ_AUDIT_MAX_BYTES || fwrite(line, 1, w.len, a->f) != w.len ||
+      fflush(a->f) != 0) {
     a->failed = 1;
     return -1;
   }
   memcpy(a->head, h, 32);
+  a->bytes += w.len;
   ++a->seq;
   return 0;
 }

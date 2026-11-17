@@ -403,6 +403,63 @@ static void cut_off_and_oversize(void) {
   pt_client_clear(&cl);
 }
 
+/* Every inbound message pays a generous bucket (512/s, burst 8192), so pings, notifications and stray responses
+ * can't flood the audit log; going over counts as a bad message and ends in a cut-off (review 2026-11-16). */
+static void message_flood(void) {
+  peachy_session_config c;
+  pt_client cl;
+  PeachySession* s = NULL;
+  char err[128];
+  const char* r;
+  peachy_limits L;
+  peachy_status_info st;
+  pt_clock ck = {1000000000ull, 0};
+  int k, ok = 0, refused = 0;
+  memset(&cl, 0, sizeof(cl));
+  memset(&L, 0, sizeof(L));
+  L.struct_size = sizeof(L);
+  L.bad_message_limit = 16;
+  base_cfg(&c, &cl, "grok", T_GROK);
+  c.limits = &L;
+  c.clock = pt_clock_fn;
+  c.clock_ctx = &ck;
+  CHECK(open_s(&c, &s, err) == PEACHY_OK, "flood session opens");
+  if (!s) return;
+  rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\"}}");
+  /* the burst: 8192 messages in all, a mix of pings, notifications and stray responses, with the clock stopped */
+  for (k = 1; k < 8192; ++k) {
+    if (k % 3 == 0) r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}");
+    else if (k % 3 == 1) r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}");
+    else r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}");
+    if (has(r, "message rate exceeded")) ++refused;
+  }
+  memset(&st, 0, sizeof(st));
+  st.struct_size = sizeof(st);
+  A->status(s, &st);
+  CHECK(refused == 0 && st.bad_messages == 0 && !st.held, "the whole burst is accepted");
+  r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}");
+  CHECK(has(r, "\"id\":3,\"error\"") && has(r, "message rate exceeded"), "one past the burst is refused");
+  /* one second refills 512 */
+  ck.t += 1000000000ull;
+  for (k = 0; k < 513; ++k) {
+    r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\"}");
+    if (has(r, "\"id\":4,\"result\"")) ++ok;
+  }
+  CHECK(ok == 512 && has(r, "message rate exceeded"), "refill at 512 per second, then refused again");
+  /* two refusals so far; notifications over the rate count too, and the 16th bad message cuts the client off */
+  for (k = 0; k < 13; ++k) rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}");
+  A->status(s, &st);
+  CHECK(st.bad_messages == 15 && !st.client_cut_off, "15 bad messages, not yet cut off");
+  rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}");
+  A->status(s, &st);
+  CHECK(st.client_cut_off == 1 && st.held == 1, "the flood ends in a cut-off and a hold");
+  /* at most one record in and one out per message, plus the open, hold and cut-off records */
+  CHECK(st.audit_length <= 2u * (8192 + 1 + 513 + 14) + 64, "audit records stay bounded by the message budget");
+  printf("flood: %llu audit records for %d messages\n", (unsigned long long)st.audit_length, 8192 + 1 + 513 + 14);
+  A->session_close(s);
+  pt_client_clear(&cl);
+}
+
 static void holds(void) {
   peachy_session_config c;
   pt_client cl;
@@ -667,6 +724,7 @@ int main(int argc, char** argv) {
   protocol();
   grants_and_rate();
   cut_off_and_oversize();
+  message_flood();
   holds();
   proposals_without_game();
   injection_never_logged();
