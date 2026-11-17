@@ -936,12 +936,12 @@ static void tool_propose(PeachySession* s, const rpc_id* id, const pj_doc* d, in
     ++nacts;
   }
   record_check(s, p->id, 2, "pass", "schema matched exactly");
-  /* 3. rate (taken when the call came in) and the session's action budget */
+  /* 3. rate (taken when the call came in) and the session's action budget. Room is checked here, but the budget
+   * is only charged once check 4 passes, so proposals refused later don't use it up. */
   if (s->actions_used + (uint64_t)nacts > s->action_budget) {
     reject(s, id, p, 3, "the session's action budget is used up");
     return;
   }
-  s->actions_used += (uint64_t)nacts;
   record_check(s, p->id, 3, "pass", "rate and budget have room");
   /* 4. legal moves on a fresh observation */
   if (!obs_fresh(s)) {
@@ -967,6 +967,7 @@ static void tool_propose(PeachySession* s, const rpc_id* id, const pj_doc* d, in
     }
   }
   record_check(s, p->id, 4, "pass", "every move is legal on the latest observation");
+  s->actions_used += (uint64_t)nacts;
   /* 5. the gate: with a planner, PCHIE's own choice is recorded beside the proposal. The proposal never commits. */
   if (s->planner.loaded) {
     uint32_t pa = 0;

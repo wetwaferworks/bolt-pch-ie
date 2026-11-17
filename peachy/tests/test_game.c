@@ -8,6 +8,7 @@ const char* pj_test_audit_path(PeachySession* s);
 static const peachy_api* A;
 static char g_dir[600], g_allow[700], g_maze[700], g_fake[700];
 static const char* T = "grok-test-token-0123456789abcdef";
+static uint32_t g_budget; /* 0 = the default action budget */
 
 static const char k_maze[] =
     "#######\n"
@@ -57,6 +58,7 @@ static void open_game(gs* g, const char* const* extra, uint32_t tool_ms, uint32_
   g->argv[k++] = g->stats;
   for (e = 0; extra && extra[e] && k < 22; ++e) g->argv[k++] = extra[e];
   g->L.struct_size = sizeof(g->L);
+  g->L.action_budget = g_budget;
   g->L.max_tool_ms = tool_ms;
   g->L.max_message_ms = tool_ms ? tool_ms + 1000 : 0;
   g->L.max_game_init_ms = init_ms ? init_ms : 20000;
@@ -176,6 +178,37 @@ static void healthy(void) {
   CHECK(has(r, "\"check\":4") && has(r, "observe first"), "observations from before a hold are dropped");
   close_game(&g);
   CHECK(count_in_file(g.stats, "player_release") == 2, "close sent player_release too");
+}
+
+/* the action budget is charged only for proposals that pass the legal-move check (review 2026-11-16, L2) */
+static void budget_only_for_legal(void) {
+  gs g;
+  const char* r;
+  int k, at4 = 0;
+  static const char* const pit =
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"propose\",\"arguments\":"
+      "{\"actions\":[{\"kind\":\"move\",\"dir\":\"north\"},{\"kind\":\"look\",\"turn\":\"left\"}]}}}";
+  static const char* const east =
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"propose\",\"arguments\":"
+      "{\"actions\":[{\"kind\":\"move\",\"dir\":\"east\"},{\"kind\":\"look\",\"turn\":\"left\"}]}}}";
+  g_budget = 4;
+  open_game(&g, NULL, 0, 0);
+  g_budget = 0;
+  CHECK(g.open_rc == PEACHY_OK, "budget: open with the fake game");
+  if (!g.s) return;
+  init(&g);
+  observe(&g, 1);
+  /* 10 proposals into the pit, 2 actions each: 20 actions against a budget of 4, all refused at check 4 */
+  for (k = 0; k < 10; ++k)
+    if (has(rpc(&g, pit), "\"check\":4")) ++at4;
+  CHECK(at4 == 10, "budget: illegal moves refused at check 4");
+  r = rpc(&g, east);
+  CHECK(has(r, "\"verdict\":\"accepted\""), "budget: a legal move still fits after many refusals");
+  r = rpc(&g, east);
+  CHECK(has(r, "\"verdict\":\"accepted\""), "budget: the second legal move uses the last of it");
+  r = rpc(&g, east);
+  CHECK(has(r, "\"check\":3") && has(r, "budget"), "budget: the third legal move is refused at check 3");
+  close_game(&g);
 }
 
 /* stale observation: a test clock moves past observe_max_age_ms */
@@ -459,6 +492,7 @@ int main(int argc, char** argv) {
   if (peachy_get_api(PEACHY_ABI_MAJOR, &A) != PEACHY_OK) return 2;
   setup();
   healthy();
+  budget_only_for_legal();
   stale();
   quirks_that_work();
   failures();

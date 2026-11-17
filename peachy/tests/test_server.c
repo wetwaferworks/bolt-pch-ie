@@ -621,18 +621,20 @@ static void proposals_without_game(void) {
     }
     CHECK(all2, "every schema violation rejected at check 2");
   }
-  /* budget: 300 actions; 8 per proposal; the 38th crosses it */
+  /* budget: 300 actions, 8 per proposal. With no observation every one is refused at check 4, so none of them
+   * spends the budget: 40 x 8 would cross 300, yet none reaches check 3 (review 2026-11-16, L2) */
   {
-    int at3 = 0;
+    int at3 = 0, at4 = 0;
     for (k = 0; k < 40; ++k) {
       r = rpc(s, &cl, "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"propose\",\"arguments\":"
                       "{\"actions\":[{\"kind\":\"look\",\"turn\":\"left\"},{\"kind\":\"look\",\"turn\":\"left\"},{\"kind\":\"look\",\"turn\":\"left\"},"
                       "{\"kind\":\"look\",\"turn\":\"left\"},{\"kind\":\"look\",\"turn\":\"left\"},{\"kind\":\"look\",\"turn\":\"left\"},"
                       "{\"kind\":\"look\",\"turn\":\"left\"},{\"kind\":\"look\",\"turn\":\"left\"}]}}}");
       if (has(r, "\"check\":3")) ++at3;
+      if (has(r, "\"check\":4")) ++at4;
     }
-    if (at3 != 3) fprintf(stderr, "  at3=%d last=%.300s\n", at3, r);
-    CHECK(at3 == 3, "action budget enforced at check 3");
+    if (at3 != 0 || at4 != 40) fprintf(stderr, "  at3=%d at4=%d last=%.300s\n", at3, at4, r);
+    CHECK(at3 == 0 && at4 == 40, "proposals refused at check 4 don't spend the action budget");
   }
   /* many proposals: the oldest expire from the 256-entry table */
   for (k = 0; k < 260; ++k)
