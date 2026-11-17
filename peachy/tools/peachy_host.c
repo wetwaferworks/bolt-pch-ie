@@ -407,6 +407,26 @@ static int unhex32(const char* s, uint8_t* out) {
   return 0;
 }
 
+/* A whole decimal number in [lo, hi]: digits only, no sign, no spaces, no trailing text, no overflow. A missing
+ * option keeps dflt. 0 ok, -1 refused. */
+static int opt_u32(int argc, char** argv, const char* name, uint32_t lo, uint32_t hi, uint32_t dflt, uint32_t* out) {
+  const char* t = opt(argc, argv, name);
+  uint64_t v = 0;
+  if (!t) {
+    *out = dflt;
+    return 0;
+  }
+  if (!*t) return -1;
+  for (; *t; ++t) {
+    if (*t < '0' || *t > '9') return -1;
+    v = v * 10u + (uint64_t)(*t - '0');
+    if (v > hi) return -1;
+  }
+  if (v < lo) return -1;
+  *out = (uint32_t)v;
+  return 0;
+}
+
 static int cmd_allow_add(int argc, char** argv) {
   const char* path = opt(argc, argv, "--allowlist");
   const char* name = opt(argc, argv, "--client");
@@ -427,11 +447,25 @@ static int cmd_allow_add(int argc, char** argv) {
   c = &a.c[a.n];
   memset(c, 0, sizeof(*c));
   pj_copy_cstr(c->name, sizeof(c->name), name);
+  /* every option is checked before anything is written, so a typo never produces an allowlist that won't load */
+  if (tr && strcmp(tr, "stdio") && strcmp(tr, "in_process")) {
+    fprintf(stderr, "peachy_host: --transport must be stdio or in_process\n");
+    return usage();
+  }
+  if (mm && strcmp(mm, "record") && strcmp(mm, "advisory")) {
+    fprintf(stderr, "peachy_host: --max-mode must be record or advisory\n");
+    return usage();
+  }
   c->transports = (tr && !strcmp(tr, "in_process")) ? PJ_TR_IN_PROCESS : PJ_TR_STDIO;
   c->max_mode = (mm && !strcmp(mm, "advisory")) ? PEACHY_MODE_ADVISORY : PEACHY_MODE_RECORD;
-  c->rate_per_sec = opt(argc, argv, "--rate") ? (uint32_t)atoi(opt(argc, argv, "--rate")) : 8;
-  c->burst = opt(argc, argv, "--burst") ? (uint32_t)atoi(opt(argc, argv, "--burst")) : 16;
-  if (c->rate_per_sec < 1 || c->rate_per_sec > 256 || c->burst < 1 || c->burst > 512) return usage();
+  if (opt_u32(argc, argv, "--rate", 1, 256, 8, &c->rate_per_sec)) {
+    fprintf(stderr, "peachy_host: --rate must be a whole number from 1 to 256\n");
+    return usage();
+  }
+  if (opt_u32(argc, argv, "--burst", 1, 512, 16, &c->burst)) {
+    fprintf(stderr, "peachy_host: --burst must be a whole number from 1 to 512\n");
+    return usage();
+  }
   if (opt(argc, argv, "--token-sha256")) {
     if (unhex32(opt(argc, argv, "--token-sha256"), c->token_sha)) return usage();
   } else if (opt(argc, argv, "--token-file")) {

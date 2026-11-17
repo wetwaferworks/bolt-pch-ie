@@ -187,6 +187,32 @@ int main(int argc, char** argv) {
     run(show, 4, out, sizeof(out), errlog);
     CHECK(strstr(out, sha) && strstr(out, "\"observe\"") && strstr(out, "\"propose\""), "show lists the hash and grants");
   }
+  /* allow-add refuses a malformed number or name before it writes anything (review 2026-11-16, L8) */
+  {
+    static const char* const bad[][2] = {{"--rate", "5x"},      {"--rate", "-1"},          {"--rate", "4294967297"},
+                                         {"--rate", ""},        {"--rate", "0"},           {"--burst", "513"},
+                                         {"--burst", " 16"},    {"--transport", "http"},   {"--max-mode", "actuate"}};
+    const char* show[] = {g_host, "show", "--allowlist", allow};
+    char* before = pt_read_file(allow, NULL);
+    char* after;
+    size_t k;
+    int quiet = 1;
+    for (k = 0; k < sizeof(bad) / sizeof(bad[0]); ++k) {
+      const char* a[] = {g_host, "allow-add", "--allowlist", allow, "--client", "gem", "--token-file", tok, bad[k][0], bad[k][1]};
+      run(a, 10, out, sizeof(out), errlog);
+      if (strstr(out, "added")) {
+        quiet = 0;
+        fprintf(stderr, "  allow-add took %s %s\n", bad[k][0], bad[k][1]);
+      }
+    }
+    CHECK(quiet, "allow-add refuses malformed numbers, transports and modes");
+    after = pt_read_file(allow, NULL);
+    CHECK(before && after && !strcmp(before, after), "the allowlist is unchanged after refused allow-adds");
+    free(before);
+    free(after);
+    run(show, 4, out, sizeof(out), errlog);
+    CHECK(strstr(out, "\"gem\"") == NULL, "no half-made client entry");
+  }
   {
     const char* v[] = {g_host, "version", "--lib", g_lib};
     run(v, 4, out, sizeof(out), errlog);
