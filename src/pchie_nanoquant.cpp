@@ -7,6 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #pragma float_control(precise, on)
@@ -149,6 +152,9 @@ static void gemm(int transA, int transB, int m, int n, int k, float alpha,
     const int ldb = transB ? k : n;
     /* Tiled over i,j to keep the inner product in cache. */
     const int TS = 64;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (int i0 = 0; i0 < m; i0 += TS) {
         const int i1 = i0 + TS < m ? i0 + TS : m;
         for (int j0 = 0; j0 < n; j0 += TS) {

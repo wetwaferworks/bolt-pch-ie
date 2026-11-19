@@ -272,6 +272,8 @@ int main(int argc, char **argv) {
             std::vector<float> s1((size_t)rows), s2((size_t)cols);
             pchie_nq_stats st;
             char nerr[PCHIE_NQ_ERROR_CAPACITY];
+            std::printf("begin %s  %dx%d r=%d\n", t->name, rows, cols, rank);
+            std::fflush(stdout);
             auto t0 = std::chrono::steady_clock::now();
             const pchie_nq_status stt =
                 pchie_nq_factorize(W.data(), rows, cols, nullptr, nullptr, &cfg, U.data(), V.data(), s1.data(),
