@@ -519,6 +519,36 @@ if(PCHIE_FUZZ)
   set_tests_properties(pchie_ternary_convert_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 900)
 endif()
 
+# The left and right hemispheres on a real model (see docs/hemispheres.md): MJHEMI2 sample
+# sets with the same bytes as Mjolnir's, the grid-maze world with its answer key, weight
+# overlays by canonical tensor name, starting Mjolnir without a shell, and ternary files
+# checked against their manifest's SHA-256. pchie_hemispheres (CUDA builds) runs the
+# classroom and the hemisphere swap on Bolt E4B and asks Mjolnir's mj_hemi gate for every
+# decision; Mjolnir works the scores out itself from the sample sets.
+add_library(pchie_hemispheres_lib STATIC src/hemispheres/SampleSet.cpp src/hemispheres/Hemisphere.cpp
+            src/hemispheres/Spawn.cpp src/hemispheres/TernaryFolder.cpp)
+target_include_directories(pchie_hemispheres_lib PUBLIC include)
+target_link_libraries(pchie_hemispheres_lib PUBLIC pchie_core)
+add_executable(pchie_hemispheres_test tests/pchie_hemispheres_test.cpp)
+target_link_libraries(pchie_hemispheres_test PRIVATE pchie_hemispheres_lib)
+if(WIN32)
+  target_link_libraries(pchie_hemispheres_test PRIVATE shell32)
+endif()
+# The test starts itself as a child to check that arguments reach a program untouched.
+add_test(NAME pchie_hemispheres COMMAND pchie_hemispheres_test $<TARGET_FILE:pchie_hemispheres_test>)
+add_executable(pchie_hemi_set_fuzz fuzz/pchie_hemi_set_fuzz.cpp)
+target_link_libraries(pchie_hemi_set_fuzz PRIVATE pchie_hemispheres_lib)
+add_test(NAME pchie_hemi_set_fuzz_smoke COMMAND pchie_hemi_set_fuzz 200000 1)
+set_tests_properties(pchie_hemi_set_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 900)
+add_executable(pchie_ternary_manifest_fuzz fuzz/pchie_ternary_manifest_fuzz.cpp)
+target_link_libraries(pchie_ternary_manifest_fuzz PRIVATE pchie_hemispheres_lib)
+add_test(NAME pchie_ternary_manifest_fuzz_smoke COMMAND pchie_ternary_manifest_fuzz 200000 1)
+set_tests_properties(pchie_ternary_manifest_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 900)
+if(TARGET pchie_cuda)
+  add_executable(pchie_hemispheres tools/pchie_hemispheres.cpp)
+  target_link_libraries(pchie_hemispheres PRIVATE pchie_hemispheres_lib pchie_cuda pchie_ternary_convert)
+endif()
+
 # Peachy (PMCP): the standalone MCP library, peachy.dll / libpeachy.so, written in C11. It builds on its own too
 # (cmake -S peachy). See peachy/README.md.
 option(PCHIE_PEACHY "Build Peachy (PMCP) and its tests" ON)

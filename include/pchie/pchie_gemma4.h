@@ -137,6 +137,16 @@ public:
     void rmsnorm(const float* x, const float* w, float* y, int n) const;
 
     const Gemma4Layer& layer_weights(int l) const { return layers_[size_t(l)]; }
+
+    // --- for the hemispheres (tools/pchie_hemispheres.cpp): weight slots and a residual capture.
+    enum class LinearSlot : int { Q = 0, K, V, O, Gate, Up, Down, InpGate, Proj };
+    // Point one linear weight of layer l at t: same shape, a type matvec reads, and the caller
+    // keeps t.data alive. Only the CPU path sees it; a CUDA backend copies its layers at init.
+    bool set_linear(int l, LinearSlot s, const QTensor& t, std::string& err);
+    bool linear(int l, LinearSlot s, QTensor& out) const;
+    // Copy the residual stream (d_model floats) and the per-layer inputs (n_layer * d_ple floats)
+    // as they enter layer l, on single-branch steps. l < 0 or a null pointer turns it off.
+    void set_capture(int l, float* x, float* ple) noexcept { cap_layer_ = l; cap_x_ = x; cap_ple_ = ple; }
     const QTensor& ple_proj() const { return ple_proj_; }
     const QTensor& tok_embd() const { return tok_embd_; }
     const float* ple_proj_norm() const { return ple_proj_norm_; }
@@ -159,6 +169,9 @@ private:
     // scratch
     std::vector<uint8_t> qbuf_;
     bool keep_swa_ = false;
+    int cap_layer_ = -1;
+    float* cap_x_ = nullptr;
+    float* cap_ple_ = nullptr;
 };
 
 } // namespace pchie

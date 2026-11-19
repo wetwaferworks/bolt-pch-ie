@@ -69,6 +69,7 @@ A researcher-facing guide lives under [`docs/guide/`](docs/guide/README.md). It 
 - [LithoKraft component reference](docs/components/README.md) — the 12 November 2026 playtest build, signal rules, and one spec sheet per component, with image slots for CloudAtlas artwork
 - [Build and test](docs/guide/build-and-test.md)
 - [Results so far](docs/guide/results.md)
+- [The left and right hemispheres](docs/hemispheres.md): the classroom, then the hemisphere swap, on Bolt E4B with Mjolnir as the pilot
 - [Limitations and threat model](docs/guide/limitations-and-threat-model.md)
 - [Security notes](SECURITY.md) — TESLA and witness cosigning are research-grade, in-house crypto that has not been independently reviewed; the anchor is file-based, not networked
 - [Changelog](CHANGELOG.md) and [release notes](RELEASE-NOTES.md)

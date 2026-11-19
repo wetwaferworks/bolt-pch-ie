@@ -571,6 +571,10 @@ void Gemma4Model::layer_batch(int l, Branch* const* bs, int B, float* X, const f
     std::vector<float> u(BD), tmp(BD), pg(static_cast<size_t>(B) * P), pg2(BD);
     std::vector<float> q(QS * B), k(KS * B), v(KS * B), att(QS * B);
     std::vector<float> g(static_cast<size_t>(B) * FF), up(static_cast<size_t>(B) * FF);
+    if (B == 1 && l == cap_layer_ && cap_x_ && cap_ple_) {
+        std::memcpy(cap_x_, X, sizeof(float) * size_t(D));
+        std::memcpy(cap_ple_, PLE, sizeof(float) * size_t(NL) * size_t(P));
+    }
 
     // --- attention
     for (int b = 0; b < B; ++b) rmsnorm(X + size_t(b) * D, L.attn_norm, &u[size_t(b) * D], D);
@@ -651,6 +655,42 @@ void Gemma4Model::layer_batch(int l, Branch* const* bs, int B, float* X, const f
         rmsnorm(p2, L.post_norm, p2, D);
         for (int i = 0; i < D; ++i) x[i] = (x[i] + p2[i]) * L.out_scale;
     }
+}
+
+static QTensor* slot_of(Gemma4Layer& L, Gemma4Model::LinearSlot s) {
+    switch (s) {
+        case Gemma4Model::LinearSlot::Q: return &L.wq;
+        case Gemma4Model::LinearSlot::K: return &L.wk;
+        case Gemma4Model::LinearSlot::V: return &L.wv;
+        case Gemma4Model::LinearSlot::O: return &L.wo;
+        case Gemma4Model::LinearSlot::Gate: return &L.gate;
+        case Gemma4Model::LinearSlot::Up: return &L.up;
+        case Gemma4Model::LinearSlot::Down: return &L.down;
+        case Gemma4Model::LinearSlot::InpGate: return &L.inp_gate;
+        case Gemma4Model::LinearSlot::Proj: return &L.proj;
+    }
+    return nullptr;
+}
+
+bool Gemma4Model::linear(int l, LinearSlot s, QTensor& out) const {
+    if (l < 0 || l >= cfg_.n_layer) return false;
+    QTensor* q = slot_of(const_cast<Gemma4Layer&>(layers_[size_t(l)]), s);
+    if (q == nullptr || q->data == nullptr) return false;   // e.g. K and V of a layer that shares its KV
+    out = *q;
+    return true;
+}
+
+bool Gemma4Model::set_linear(int l, LinearSlot s, const QTensor& t, std::string& err) {
+    if (l < 0 || l >= cfg_.n_layer) { err = "layer out of range"; return false; }
+    QTensor* q = slot_of(layers_[size_t(l)], s);
+    if (q == nullptr || q->data == nullptr) { err = "this layer has no such weight"; return false; }
+    if (t.data == nullptr) { err = "no data"; return false; }
+    if (t.type != 8 && t.type != 12 && t.type != 14 && t.type != 30) { err = "unsupported weight type"; return false; }
+    if (t.type == 30 && t.ne0 % 8 != 0) { err = "BF16 weight row is not a multiple of 8"; return false; }
+    if (t.ne0 != q->ne0 || t.ne1 != q->ne1) { err = "shape differs from the loaded weight"; return false; }
+    if (reinterpret_cast<uintptr_t>(t.data) % 4 != 0) { err = "weight data not 4-byte aligned"; return false; }
+    *q = t;
+    return true;
 }
 
 void Gemma4Model::head(const float* x, std::vector<float>& logits, IJobDispatcher& pool) { head_batch(x, 1, &logits, pool); }
