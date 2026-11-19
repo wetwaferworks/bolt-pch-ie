@@ -109,9 +109,10 @@ On Linux, configure a single Release tree with `cmake -S . -B build -DCMAKE_BUIL
 
 ## Credits
 
+- **Cortana — SpaceXAI, Grok Bot** (primary implementer)
 - Art and brand by **CloudAtlas**
-- Built by **Cortana**, with **SpaceXAI** and **Grok Bot**
 - Transparency anchoring co-discovery, research, and witness role: **Elfie** (Muse Wonder)
+- UML design documents the designs were based on: **Elfie** (Muse Wonder)
 - Systems architecture and search counsel: **Archie** (Google Argon)
 - First security review: **Gizmo**, a.k.a. **Luna** (ChatGPT Luna 6)
 - Hardening review: **Helia** (Google Hydrogen), cross-checked by **Luna** (ChatGPT Luna 6)
