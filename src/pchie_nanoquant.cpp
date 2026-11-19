@@ -16,10 +16,6 @@
 #pragma fp_contract(off)
 #endif
 
-#ifdef PCHIE_NANOQUANT_CUDA
-#include <cublas_v2.h>
-#endif
-
 static void set_error(char *error, size_t cap, const char *msg) {
     if (!error || cap == 0) return;
     std::snprintf(error, cap, "%s", msg ? msg : "");
@@ -48,6 +44,7 @@ void pchie_nq_config_init(pchie_nq_config *config) {
     config->rho_cubic = 0;
     config->seed = 0;
     config->transpose_wide = 1;
+    config->use_cuda = 1;
 }
 
 int pchie_nq_choose_rank(int rows, int cols, float bits) {
@@ -138,9 +135,6 @@ static float nrm2(const float *a, int n) {
  * transA/transB 0: A is m x k / B is k x n; 1: A is k x m / B is n x k. */
 static void gemm(int transA, int transB, int m, int n, int k, float alpha,
                  const float *A, const float *B, float beta, float *C) {
-#ifdef PCHIE_NANOQUANT_CUDA
-    /* Used only when a handle is set; otherwise fall through to CPU. */
-#endif
     if (beta == 0.0f) {
         std::memset(C, 0, (size_t)m * (size_t)n * sizeof(float));
     } else if (beta != 1.0f) {
@@ -180,51 +174,8 @@ static void gemm(int transA, int transB, int m, int n, int k, float alpha,
     }
 }
 
-#ifdef PCHIE_NANOQUANT_CUDA
-static cublasHandle_t g_blas = nullptr;
-static int cublas_ok() {
-    if (g_blas) return 1;
-    if (cublasCreate(&g_blas) != CUBLAS_STATUS_SUCCESS) {
-        g_blas = nullptr;
-        return 0;
-    }
-    return 1;
-}
-
-static int gemm_cuda(int transA, int transB, int m, int n, int k, float alpha,
-                     const float *A, const float *B, float beta, float *C) {
-    if (!cublas_ok()) return 0;
-    /* cublas is column-major; row-major (m x n) = col-major (n x m) of the transpose.
-     * C_rm = opA(A) opB(B)  <=>  C_cm^T = opB(B)^T opA(A)^T. */
-    float *dA = nullptr, *dB = nullptr, *dC = nullptr;
-    const size_t as = (size_t)(transA ? k : m) * (size_t)(transA ? m : k) * sizeof(float);
-    const size_t bs = (size_t)(transB ? n : k) * (size_t)(transB ? k : n) * sizeof(float);
-    const size_t cs = (size_t)m * (size_t)n * sizeof(float);
-    if (cudaMalloc(&dA, as) != cudaSuccess) return 0;
-    if (cudaMalloc(&dB, bs) != cudaSuccess) { cudaFree(dA); return 0; }
-    if (cudaMalloc(&dC, cs) != cudaSuccess) { cudaFree(dA); cudaFree(dB); return 0; }
-    cudaMemcpy(dA, A, as, cudaMemcpyHostToDevice);
-    cudaMemcpy(dB, B, bs, cudaMemcpyHostToDevice);
-    if (beta != 0.0f) cudaMemcpy(dC, C, cs, cudaMemcpyHostToDevice);
-    const cublasOperation_t opA = transA ? CUBLAS_OP_N : CUBLAS_OP_T;
-    const cublasOperation_t opB = transB ? CUBLAS_OP_N : CUBLAS_OP_T;
-    const int lda = transA ? m : k;
-    const int ldb = transB ? k : n;
-    /* We compute n x m in column-major: C^T = op(B^T) * op(A^T). */
-    const cublasStatus_t st = cublasSgemm(g_blas, opB, opA, n, m, k, &alpha, dB, ldb, dA, lda, &beta, dC, n);
-    int ok = (st == CUBLAS_STATUS_SUCCESS);
-    if (ok) cudaMemcpy(C, dC, cs, cudaMemcpyDeviceToHost);
-    cudaFree(dA); cudaFree(dB); cudaFree(dC);
-    return ok;
-}
-#endif
-
 static void gemm_auto(int transA, int transB, int m, int n, int k, float alpha,
                       const float *A, const float *B, float beta, float *C) {
-#ifdef PCHIE_NANOQUANT_CUDA
-    const uint64_t flops = 2ull * (uint64_t)m * (uint64_t)n * (uint64_t)k;
-    if (flops >= 8ull * 1000000ull && gemm_cuda(transA, transB, m, n, k, alpha, A, B, beta, C)) return;
-#endif
     gemm(transA, transB, m, n, k, alpha, A, B, beta, C);
 }
 
@@ -652,6 +603,52 @@ static pchie_nq_status factorize_core(const float *W, int rows, int cols, const 
     return PCHIE_NQ_OK;
 }
 
+#ifdef PCHIE_NANOQUANT_CUDA
+extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int cols, const float *d_in,
+                                                   const float *d_out, const pchie_nq_config *cfg, int rank,
+                                                   int8_t *u_sign, int8_t *v_sign, float *s1, float *s2,
+                                                   pchie_nq_stats *stats, char *error, size_t errcap);
+#else
+pchie_nq_cuda_info pchie_nq_query_cuda(void) {
+    pchie_nq_cuda_info info;
+    std::memset(&info, 0, sizeof info);
+    return info;
+}
+
+int pchie_nq_cuda_available(void) { return 0; }
+#endif
+
+static pchie_nq_status run_factor(const float *w, int rows, int cols, const float *d_in, const float *d_out,
+                                  const pchie_nq_config *config, int rank, int8_t *u_sign, int8_t *v_sign, float *s1,
+                                  float *s2, pchie_nq_stats *stats, char *error, size_t error_capacity) {
+    const int want = config->use_cuda;
+#ifdef PCHIE_NANOQUANT_CUDA
+    if (want != 0 && pchie_nq_cuda_available()) {
+        const pchie_nq_status st = pchie_nq_factorize_cuda(w, rows, cols, d_in, d_out, config, rank, u_sign, v_sign, s1,
+                                                           s2, stats, error, error_capacity);
+        if (st == PCHIE_NQ_OK) return st;
+        if (want == 2) return st;
+        if (st != PCHIE_NQ_TOO_LARGE && st != PCHIE_NQ_NO_MEMORY) return st;
+        if (error && error_capacity) error[0] = 0;
+    } else if (want == 2) {
+        set_error(error, error_capacity, "CUDA was required, but no device is present");
+        return PCHIE_NQ_BAD_ARGUMENT;
+    }
+#else
+    if (want == 2) {
+        set_error(error, error_capacity, "CUDA was required, but this build was made without it");
+        return PCHIE_NQ_BAD_ARGUMENT;
+    }
+#endif
+    const pchie_nq_status st = factorize_core(w, rows, cols, d_in, d_out, config, rank, u_sign, v_sign, s1, s2, stats,
+                                              error, error_capacity);
+    if (st == PCHIE_NQ_OK && stats) {
+        stats->backend = 0;
+        stats->device_bytes = 0;
+    }
+    return st;
+}
+
 pchie_nq_status pchie_nq_factorize(const float *w, int rows, int cols, const float *d_in, const float *d_out,
                                    const pchie_nq_config *config, int8_t *u_sign, int8_t *v_sign, float *s1,
                                    float *s2, pchie_nq_stats *stats, char *error, size_t error_capacity) {
@@ -682,7 +679,7 @@ pchie_nq_status pchie_nq_factorize(const float *w, int rows, int cols, const flo
         /* swap d_in / d_out and U / V / s1 / s2 */
         std::vector<int8_t> uT((size_t)cols * (size_t)rank), vT((size_t)rows * (size_t)rank);
         std::vector<float> s1T((size_t)cols), s2T((size_t)rows);
-        st = factorize_core(WT.data(), cols, rows, d_out, d_in, config, rank, uT.data(), vT.data(), s1T.data(),
+        st = run_factor(WT.data(), cols, rows, d_out, d_in, config, rank, uT.data(), vT.data(), s1T.data(),
                             s2T.data(), stats, error, error_capacity);
         if (st != PCHIE_NQ_OK) {
             zero_outputs(u_sign, v_sign, s1, s2, rows, cols, rank, stats);
@@ -707,7 +704,7 @@ pchie_nq_status pchie_nq_factorize(const float *w, int rows, int cols, const flo
         return PCHIE_NQ_OK;
     }
 
-    st = factorize_core(w, rows, cols, d_in, d_out, config, rank, u_sign, v_sign, s1, s2, stats, error, error_capacity);
+    st = run_factor(w, rows, cols, d_in, d_out, config, rank, u_sign, v_sign, s1, s2, stats, error, error_capacity);
     if (st != PCHIE_NQ_OK) {
         zero_outputs(u_sign, v_sign, s1, s2, rows, cols, rank, stats);
         return st;

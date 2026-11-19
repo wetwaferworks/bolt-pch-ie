@@ -150,13 +150,17 @@ static int write_nq1(const char *path, const char *name, const pchie_nq_stats *s
 static void usage() {
     std::fprintf(stderr,
                  "usage: pchie_nanoquant factor MODEL --out DIR [--bits 1.0] [--bits 0.8]\n"
-                 "                                 [--iters 400] [--seed 0] [--rank N]\n");
+                 "                                 [--iters 400] [--seed 0] [--rank N]\n"
+                 "                                 [--cpu | --cuda]\n"
+                 "  --cpu   keep the factorizer on the host\n"
+                 "  --cuda  require the CUDA factorizer (fails if the device cannot take the layer)\n"
+                 "  default is CUDA when a device is present, otherwise the host\n");
 }
 
 int main(int argc, char **argv) {
     const char *model = nullptr, *out = nullptr;
     std::vector<float> bits_list;
-    int iters = 400, rank_override = 0;
+    int iters = 400, rank_override = 0, use_cuda = 1;
     uint64_t seed = 0;
     if (argc < 2 || std::strcmp(argv[1], "factor") != 0) {
         usage();
@@ -168,6 +172,8 @@ int main(int argc, char **argv) {
         else if (std::strcmp(argv[i], "--iters") == 0 && i + 1 < argc) iters = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) seed = (uint64_t)std::strtoull(argv[++i], nullptr, 10);
         else if (std::strcmp(argv[i], "--rank") == 0 && i + 1 < argc) rank_override = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--cpu") == 0) use_cuda = 0;
+        else if (std::strcmp(argv[i], "--cuda") == 0) use_cuda = 2;
         else if (!model && argv[i][0] != '-') model = argv[i];
         else {
             usage();
@@ -214,6 +220,22 @@ int main(int argc, char **argv) {
     }
 
     int rc = 0;
+    const pchie_nq_cuda_info ci = pchie_nq_query_cuda();
+    if (use_cuda == 2 && !(ci.built && ci.device_count > 0)) {
+        std::fprintf(stderr, "CUDA was required, but this build has no device (built=%d devices=%d)\n", ci.built,
+                     ci.device_count);
+        return 1;
+    }
+    if (use_cuda == 0) {
+        std::printf("backend: CPU (requested)\n");
+    } else if (ci.built && ci.device_count > 0) {
+        std::printf("backend: CUDA %s  %.0f MiB total, %.0f MiB free  (use_cuda=%d)\n", ci.device_name,
+                    ci.total_bytes / (1024.0 * 1024.0), ci.free_bytes / (1024.0 * 1024.0), use_cuda);
+    } else {
+        std::printf("backend: CPU (no CUDA device, built=%d)\n", ci.built);
+    }
+    std::fflush(stdout);
+
     for (float bits : bits_list) {
         char bitdir[1024];
         std::snprintf(bitdir, sizeof bitdir, "%s/bits-%.2f", out, bits);
@@ -231,6 +253,7 @@ int main(int argc, char **argv) {
         cfg.rank = rank_override;
         cfg.outer_iters = iters;
         cfg.seed = seed;
+        cfg.use_cuda = use_cuda;
 
         uint64_t n_ok = 0, n_skip = 0, n_fail = 0, n_already = 0;
         uint64_t weights = 0, packed = 0;
@@ -309,9 +332,10 @@ int main(int argc, char **argv) {
                 std::fprintf(tsv, "%s\t%d\t%d\t%d\t%llu\t%llu\t%.6f\t%.6f\t%.6f\t%.6f\t%.3f\n", t->name, st.rows,
                              st.cols, st.rank, (unsigned long long)st.weight_count, (unsigned long long)st.packed_bytes,
                              st.bits_per_weight, st.bits_per_weight_fp16, st.cosine, st.relative_error, secs);
-            std::printf("ok %s  %dx%d r=%d  bpw=%.3f (fp16 %.3f)  cos=%.4f rel=%.4f  %.1fs\n", t->name, st.rows,
-                        st.cols, st.rank, st.bits_per_weight, st.bits_per_weight_fp16, st.cosine, st.relative_error,
-                        secs);
+            std::printf("ok %s  %dx%d r=%d  bpw=%.3f (fp16 %.3f)  cos=%.4f rel=%.4f  %.1fs  %s  dev=%llu B\n", t->name,
+                        st.rows, st.cols, st.rank, st.bits_per_weight, st.bits_per_weight_fp16, st.cosine,
+                        st.relative_error, secs, st.backend ? "cuda" : "cpu",
+                        (unsigned long long)st.device_bytes);
             std::fflush(stdout);
         }
         std::free(raw);

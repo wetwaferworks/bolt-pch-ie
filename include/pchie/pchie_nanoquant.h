@@ -31,6 +31,8 @@ typedef enum pchie_nq_status {
     PCHIE_NQ_NO_MEMORY = 3
 } pchie_nq_status;
 
+/* use_cuda: 0 = CPU only; 1 = CUDA if a device is present, otherwise CPU (default);
+ * 2 = CUDA required (fails if this build has no CUDA or the tensor does not fit). */
 typedef struct pchie_nq_config {
     float bits;
     int rank;
@@ -41,6 +43,7 @@ typedef struct pchie_nq_config {
     int rho_cubic;
     uint64_t seed;
     int transpose_wide;
+    int use_cuda;
 } pchie_nq_config;
 
 typedef struct pchie_nq_stats {
@@ -54,11 +57,24 @@ typedef struct pchie_nq_stats {
     double cosine;
     double relative_error;
     int transposed;
+    int backend;            /* 0 = CPU, 1 = CUDA */
+    uint64_t device_bytes;  /* peak device memory this call held, 0 on CPU */
 } pchie_nq_stats;
+
+typedef struct pchie_nq_cuda_info {
+    int built;              /* compiled with the CUDA factorizer */
+    int device_count;
+    char device_name[256];
+    uint64_t total_bytes;
+    uint64_t free_bytes;
+} pchie_nq_cuda_info;
 
 void pchie_nq_config_init(pchie_nq_config *config);
 int pchie_nq_choose_rank(int rows, int cols, float bits);
 uint64_t pchie_nq_packed_bytes(int rows, int cols, int rank, int scale_bytes);
+pchie_nq_cuda_info pchie_nq_query_cuda(void);
+int pchie_nq_cuda_available(void);
+
 pchie_nq_status pchie_nq_factorize(const float *w, int rows, int cols, const float *d_in, const float *d_out,
                                    const pchie_nq_config *config, int8_t *u_sign, int8_t *v_sign, float *s1,
                                    float *s2, pchie_nq_stats *stats, char *error, size_t error_capacity);

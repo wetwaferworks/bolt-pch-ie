@@ -36,10 +36,36 @@ Tool:
 
 ```
 pchie_nanoquant factor MODEL.safetensors --out OUTDIR --bits 1.0 --bits 0.8
+pchie_nanoquant factor MODEL.safetensors --out OUTDIR --bits 1.0 --cuda
+pchie_nanoquant factor MODEL.safetensors --out OUTDIR --bits 1.0 --cpu
 ```
 
 The model is opened read-only. Output goes under `OUTDIR` only. A second run
-skips tensors that already have a complete file.
+skips tensors that already have a complete file. `--cuda` requires the device;
+`--cpu` stays on the host; the default uses the device when one is present.
+
+## CUDA path
+
+The LB-ADMM inner loop (the sign updates, the scale updates, and the matmuls)
+runs on the GPU when a device is present. Factors and ADMM state stay in device
+memory. The weight matrix is kept in pinned host memory and streamed as
+double-buffered tiles with `cudaMemcpyAsync` on a pair of copy streams that
+overlap the cuBLAS work. Tile size is chosen from `cudaMemGetInfo` at the start
+of each tensor, leaving 256 MiB of device memory in reserve so a 4 GB card is
+not asked to page through WDDM shared memory. cuBLAS runs in pedantic / IEEE
+mode (no TF32). The small r×r Cholesky solve stays on the host.
+
+CPU vs CUDA parity is checked in `pchie_nanoquant_test` on small matrices, with
+documented tolerances:
+
+- `|cosine_cpu - cosine_cuda| ≤ 1e-4`
+- `|rel_cpu - rel_cuda| ≤ 1e-4`
+- relative L2 between the two reconstructions `≤ 1e-3`
+- scale L2 relative `≤ 1e-3` when every sign agrees
+
+Signs may differ where a latent is under `1e-5` in magnitude; a reconstruction
+that stays inside those tolerances still passes. The CUDA section is skipped,
+not failed, when the test is built or run without a device.
 
 ## Credits
 

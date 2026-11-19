@@ -33,6 +33,7 @@ static void test_rank_and_pack() {
 static void test_bad_args() {
     pchie_nq_config cfg;
     pchie_nq_config_init(&cfg);
+    cfg.use_cuda = 0;
     cfg.rank = 4;
     cfg.outer_iters = 2;
     float w[4] = {1, 2, 3, 4};
@@ -100,6 +101,7 @@ static void test_factorize_random() {
     }
     pchie_nq_config cfg;
     pchie_nq_config_init(&cfg);
+    cfg.use_cuda = 0;
     cfg.rank = rank;
     cfg.outer_iters = 60;
     cfg.seed = 7;
@@ -133,6 +135,7 @@ static void test_factorize_lowrank_binary() {
     make_exact(rows, cols, rank, 12345, W, Ut, Vt, s1t, s2t);
     pchie_nq_config cfg;
     pchie_nq_config_init(&cfg);
+    cfg.use_cuda = 0;
     cfg.rank = rank;
     cfg.outer_iters = 120;
     cfg.seed = 3;
@@ -158,6 +161,7 @@ static void test_hessian_ones_match() {
     std::vector<float> din((size_t)cols, 1.0f), dout((size_t)rows, 1.0f);
     pchie_nq_config cfg;
     pchie_nq_config_init(&cfg);
+    cfg.use_cuda = 0;
     cfg.rank = rank;
     cfg.outer_iters = 20;
     cfg.seed = 11;
@@ -176,6 +180,136 @@ static void test_hessian_ones_match() {
     CHECK(same);
 }
 
+
+/* CPU vs CUDA parity, documented tolerances, small matrices only.
+ *
+ *   |cosine_cpu - cosine_cuda|          <= 1e-4
+ *   |rel_cpu    - rel_cuda|             <= 1e-4
+ *   ||What_cpu - What_cuda|| / ||What_cpu||  <= 1e-3
+ *   scale L2 relative                  <= 1e-3 when every sign agrees
+ *
+ * Signs may differ where the corresponding latent is under 1e-5 in magnitude;
+ * a reconstruction that stays inside the tolerances above still passes. The
+ * CUDA section is skipped (not failed) when this build has no device.
+ */
+static void reconstruct(const int8_t *U, const int8_t *V, const float *s1, const float *s2, int rows, int cols,
+                        int rank, std::vector<float> &What) {
+    What.assign((size_t)rows * (size_t)cols, 0.0f);
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            int acc = 0;
+            for (int k = 0; k < rank; ++k)
+                acc += (int)U[(size_t)i * (size_t)rank + (size_t)k] * (int)V[(size_t)j * (size_t)rank + (size_t)k];
+            What[(size_t)i * (size_t)cols + (size_t)j] = s1[i] * (float)acc * s2[j];
+        }
+    }
+}
+
+static double vec_rel(const std::vector<float> &a, const std::vector<float> &b) {
+    double num = 0.0, den = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const double d = (double)a[i] - (double)b[i];
+        num += d * d;
+        den += (double)a[i] * (double)a[i];
+    }
+    return (den > 0.0) ? std::sqrt(num / den) : std::sqrt(num);
+}
+
+static void run_one_parity(const char *tag, const std::vector<float> &W, int rows, int cols, const float *din,
+                           const float *dout, pchie_nq_config cfg) {
+    const int rank = cfg.rank;
+    std::vector<int8_t> Uc((size_t)rows * rank), Vc((size_t)cols * rank), Ug(Uc), Vg(Vc);
+    std::vector<float> s1c(rows), s2c(cols), s1g(rows), s2g(cols);
+    pchie_nq_stats sc, sg;
+    char errc[PCHIE_NQ_ERROR_CAPACITY] = {0}, errg[PCHIE_NQ_ERROR_CAPACITY] = {0};
+    cfg.use_cuda = 0;
+    CHECK(pchie_nq_factorize(W.data(), rows, cols, din, dout, &cfg, Uc.data(), Vc.data(), s1c.data(), s2c.data(), &sc,
+                             errc, sizeof errc) == PCHIE_NQ_OK);
+    CHECK(sc.backend == 0);
+    cfg.use_cuda = 2;
+    const pchie_nq_status gst = pchie_nq_factorize(W.data(), rows, cols, din, dout, &cfg, Ug.data(), Vg.data(),
+                                                   s1g.data(), s2g.data(), &sg, errg, sizeof errg);
+    if (gst != PCHIE_NQ_OK) {
+        std::printf("FAIL %s: CUDA factorize: %s\n", tag, errg);
+        ++g_fail;
+        return;
+    }
+    CHECK(sg.backend == 1);
+    CHECK(std::fabs(sc.cosine - sg.cosine) <= 1e-4);
+    CHECK(std::fabs(sc.relative_error - sg.relative_error) <= 1e-4);
+    std::vector<float> Wc, Wg;
+    reconstruct(Uc.data(), Vc.data(), s1c.data(), s2c.data(), rows, cols, rank, Wc);
+    reconstruct(Ug.data(), Vg.data(), s1g.data(), s2g.data(), rows, cols, rank, Wg);
+    CHECK(vec_rel(Wc, Wg) <= 1e-3);
+    const int signs_agree = (Uc == Ug && Vc == Vg);
+    if (signs_agree) {
+        CHECK(vec_rel(s1c, s1g) <= 1e-3);
+        CHECK(vec_rel(s2c, s2g) <= 1e-3);
+    }
+    std::printf("parity %s  cos CPU %.6f CUDA %.6f  rel CPU %.6f CUDA %.6f  What rel %.3e  signs %s  dev %llu B\n",
+                tag, sc.cosine, sg.cosine, sc.relative_error, sg.relative_error, vec_rel(Wc, Wg),
+                signs_agree ? "agree" : "differ", (unsigned long long)sg.device_bytes);
+}
+
+static void test_cuda_parity() {
+    const pchie_nq_cuda_info info = pchie_nq_query_cuda();
+    if (!pchie_nq_cuda_available()) {
+        std::printf("CUDA parity skipped (built=%d devices=%d)\n", info.built, info.device_count);
+        return;
+    }
+    std::printf("CUDA parity on %s  (%.1f MiB total, %.1f MiB free)\n", info.device_name,
+                info.total_bytes / (1024.0 * 1024.0), info.free_bytes / (1024.0 * 1024.0));
+
+    {
+        const int rows = 24, cols = 40, rank = 16;
+        std::vector<float> W((size_t)rows * (size_t)cols);
+        uint64_t x = 99;
+        for (float &v : W) {
+            x = x * 6364136223846793005ULL + 1;
+            v = ((int)(x % 2000) - 1000) / 200.0f;
+        }
+        pchie_nq_config cfg;
+        pchie_nq_config_init(&cfg);
+        cfg.rank = rank;
+        cfg.outer_iters = 60;
+        cfg.seed = 7;
+        cfg.transpose_wide = 1;
+        run_one_parity("random 24x40 r16", W, rows, cols, nullptr, nullptr, cfg);
+    }
+    {
+        const int rows = 32, cols = 32, rank = 8;
+        std::vector<float> W, s1t, s2t;
+        std::vector<int8_t> Ut, Vt;
+        make_exact(rows, cols, rank, 12345, W, Ut, Vt, s1t, s2t);
+        pchie_nq_config cfg;
+        pchie_nq_config_init(&cfg);
+        cfg.rank = rank;
+        cfg.outer_iters = 120;
+        cfg.seed = 3;
+        cfg.transpose_wide = 0;
+        run_one_parity("exact-binary 32x32 r8", W, rows, cols, nullptr, nullptr, cfg);
+    }
+    {
+        const int rows = 16, cols = 20, rank = 8;
+        std::vector<float> W((size_t)rows * (size_t)cols);
+        uint64_t x = 5;
+        for (float &v : W) {
+            x = x * 6364136223846793005ULL + 1;
+            v = ((int)(x % 201) - 100) / 50.0f;
+        }
+        std::vector<float> din((size_t)cols), dout((size_t)rows);
+        for (int j = 0; j < cols; ++j) din[j] = 0.25f + 0.05f * (float)j;
+        for (int i = 0; i < rows; ++i) dout[i] = 0.5f + 0.03f * (float)i;
+        pchie_nq_config cfg;
+        pchie_nq_config_init(&cfg);
+        cfg.rank = rank;
+        cfg.outer_iters = 20;
+        cfg.seed = 11;
+        cfg.transpose_wide = 0;
+        run_one_parity("hessian 16x20 r8", W, rows, cols, din.data(), dout.data(), cfg);
+    }
+}
+
 int main() {
     test_rank_and_pack();
     test_bad_args();
@@ -183,6 +317,7 @@ int main() {
     test_factorize_random();
     test_factorize_lowrank_binary();
     test_hessian_ones_match();
+    test_cuda_parity();
     std::printf("pchie_nanoquant_test: %d pass, %d fail\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
