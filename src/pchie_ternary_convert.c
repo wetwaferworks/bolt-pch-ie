@@ -343,6 +343,11 @@ int ternary_parse_safetensors_header(const char *json, uint64_t header_length, u
         tensor = &file.tensors[file.tensor_count];
         memset(tensor, 0, sizeof(*tensor));
         tensor->name = ternary_duplicate_string(member->key, member->key_length);
+        /* count the tensor now, so every failure below frees its name (it was leaked before) */
+        file.tensor_count++;
+        if (!tensor->name) {
+            return safetensors_header_fail(&root, &file, error, error_capacity, "safetensors: out of memory");
+        }
         n = strlen(info->name);
         if (n > sizeof(tensor->type_name) - 1) n = sizeof(tensor->type_name) - 1;
         memcpy(tensor->type_name, info->name, n);
@@ -391,7 +396,6 @@ int ternary_parse_safetensors_header(const char *json, uint64_t header_length, u
         tensor->columns = tensor->dimension_count == 0 ? 1 : tensor->shape[tensor->dimension_count - 1];
         tensor->rows = tensor->columns ? count / tensor->columns : 0;
         tensor->bytes_per_row = tensor->columns * info->size;
-        file.tensor_count++;
     }
 
     if (!ternary_check_tensor_layout(&file, error, error_capacity)) {

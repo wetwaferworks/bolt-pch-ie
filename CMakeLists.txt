@@ -511,6 +511,8 @@ add_executable(pchie_ternary_convert_test tests/pchie_ternary_convert_test.cpp)
 target_include_directories(pchie_ternary_convert_test PRIVATE src)
 target_link_libraries(pchie_ternary_convert_test PRIVATE pchie_ternary_convert pchie_ternary_research)
 add_test(NAME pchie_ternary_convert COMMAND pchie_ternary_convert_test)
+add_executable(pchie_ternary_convert_cli_test tests/pchie_ternary_convert_cli_test.cpp)
+add_test(NAME pchie_ternary_convert_cli COMMAND pchie_ternary_convert_cli_test $<TARGET_FILE:pchie_ternary_convert_tool>)
 # CPU vs CUDA parity. Exits 77 (skipped) on a build or a machine without CUDA.
 add_executable(pchie_ternary_convert_cuda_test tests/pchie_ternary_convert_cuda_test.cpp)
 target_include_directories(pchie_ternary_convert_cuda_test PRIVATE src)

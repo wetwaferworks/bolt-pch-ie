@@ -220,6 +220,68 @@ static int path_is_inside(const char *child, const char *parent) {
     return a[parent_len] == 0 || a[parent_len] == '/' || a[parent_len] == '\\';
 }
 
+/* The real location of a path: every symbolic link and junction in the part that exists is resolved
+ * (realpath, or GetFinalPathNameByHandle on Windows), and the part that does not exist yet is added back as
+ * written. Used so "inside the model's folder" cannot be dodged through a link. */
+static int resolve_real_path(const char *in, char *out, size_t out_capacity) {
+    char abs_path[4096], head[4096], tail[4096];
+    size_t n;
+    if (!canonicalize_path(in, abs_path, sizeof(abs_path))) return 0;
+    if (!copy_string(head, sizeof(head), abs_path)) return 0;
+    tail[0] = 0;
+    for (;;) {
+#if defined(_WIN32)
+        HANDLE h = CreateFileA(head, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            char fin[4096];
+            DWORD k = GetFinalPathNameByHandleA(h, fin, (DWORD)sizeof(fin), FILE_NAME_NORMALIZED);
+            const char *p = fin;
+            CloseHandle(h);
+            if (k == 0 || k >= sizeof(fin)) return 0;
+            if (strncmp(fin, "\\\\?\\UNC\\", 8) == 0) { fin[6] = '\\'; p = fin + 6; }
+            else if (strncmp(fin, "\\\\?\\", 4) == 0) p = fin + 4;
+            {
+                const char *t = tail;
+                const size_t pl = strlen(p);
+                if (pl && (p[pl - 1] == '\\' || p[pl - 1] == '/') && (t[0] == '\\' || t[0] == '/')) ++t;
+                if (pl + strlen(t) + 1 >= out_capacity) return 0;
+                snprintf(out, out_capacity, "%s%s", p, t);
+            }
+            return 1;
+        }
+#else
+        char real[PATH_MAX];
+        if (realpath(head, real)) {
+            if (strlen(real) + strlen(tail) + 1 >= out_capacity) return 0;
+            snprintf(out, out_capacity, "%s%s", strcmp(real, "/") == 0 ? "" : real, tail);
+            if (!out[0]) snprintf(out, out_capacity, "/");
+            return 1;
+        }
+        if (errno != ENOENT && errno != ENOTDIR) return 0;
+#endif
+        /* move the last component of head to the front of tail; a part that does not exist may not use ".." */
+        n = strlen(head);
+        while (n && (head[n - 1] == '/' || head[n - 1] == '\\')) head[--n] = 0;
+        {
+            size_t cut = n;
+            char rest[4096];
+            while (cut && head[cut - 1] != '/' && head[cut - 1] != '\\') --cut;
+            if (cut == 0) return 0;
+            if (strcmp(head + cut, "..") == 0 || strcmp(head + cut, ".") == 0) return 0;
+            if (strlen(head + cut - 1) + strlen(tail) + 1 >= sizeof(rest)) return 0;
+            snprintf(rest, sizeof(rest), "%s%s", head + cut - 1, tail);
+            memcpy(tail, rest, strlen(rest) + 1);
+            head[cut - 1] = 0;
+            if (cut - 1 == 0 || (cut - 1 == 2 && head[1] == ':')) {
+                /* reached the root: "/" or "C:" */
+                if (cut - 1 == 0) { head[0] = '/'; head[1] = 0; }
+                else { head[2] = '\\'; head[3] = 0; }
+            }
+        }
+    }
+}
+
 static int directory_exists(const char *path) {
 #if defined(_WIN32)
     DWORD attr = GetFileAttributesA(path);
@@ -530,9 +592,17 @@ int main(int argc, char **argv) {
     }
 
     {
-        char model_dir[4096], out_canon[4096];
-        parent_directory(model, model_dir, sizeof(model_dir));
-        if (!canonicalize_path(out_dir, out_canon, sizeof(out_canon))) {
+        char model_dir[4096], out_canon[4096], model_real[4096], out_real[4096];
+        if (!resolve_real_path(model, model_real, sizeof(model_real))) {
+            fprintf(stderr, "error: cannot resolve %s\n", model);
+            free(picked);
+            ternary_source_file_clear(&source);
+            string_list_free(&match);
+            string_list_free(&skip);
+            return 1;
+        }
+        parent_directory(model_real, model_dir, sizeof(model_dir));
+        if (!canonicalize_path(out_dir, out_canon, sizeof(out_canon)) || !resolve_real_path(out_canon, out_real, sizeof(out_real))) {
             fprintf(stderr, "error: cannot resolve %s\n", out_dir);
             free(picked);
             ternary_source_file_clear(&source);
@@ -540,7 +610,7 @@ int main(int argc, char **argv) {
             string_list_free(&skip);
             return 1;
         }
-        if (path_is_inside(out_canon, model_dir)) {
+        if (!model_dir[0] || path_is_inside(out_real, model_dir) || path_is_inside(out_canon, model_dir)) {
             fprintf(stderr, "error: the output folder may not be inside the model's folder\n");
             free(picked);
             ternary_source_file_clear(&source);
