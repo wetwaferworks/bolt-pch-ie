@@ -20,6 +20,7 @@
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
+#include <cusolverDn.h>
 
 static void set_error(char *error, size_t cap, const char *msg) {
     if (!error || cap == 0) return;
@@ -353,6 +354,28 @@ __global__ void nq_k_als_s2_final(double *pr, double *nrm, float *s2, int n) {
     if (nrm[j] > 0.0) s2[j] = (float)(pr[j] / nrm[j]);
 }
 
+__global__ void nq_k_diag_abs_sum(const float *A, int r, float *out) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    double s = 0.0;
+    for (int i = 0; i < r; ++i) s += fabs((double)A[i * r + i]);
+    *out = (float)s;
+}
+
+__global__ void nq_k_add_stab(float *A, int r, float stab) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < r) A[i * r + i] += stab;
+}
+
+__global__ void nq_k_symmetrize(float *A, int r) {
+    const int i = blockIdx.y * blockDim.y + threadIdx.y;
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < r && j < i) {
+        const float s = 0.5f * (A[i * r + j] + A[j * r + i]);
+        A[i * r + j] = s;
+        A[j * r + i] = s;
+    }
+}
+
 /* ---------- launch helpers ---------- */
 
 static int div_up(int a, int b) { return (a + b - 1) / b; }
@@ -437,9 +460,13 @@ struct NqMem {
     cudaStream_t compute, copy[2];
     cudaEvent_t ev_copied[2], ev_used[2];
     size_t tile_elems;
+    float *sol_work;
+    int *sol_info;
+    int sol_lwork;
     size_t bytes;
     size_t host_bytes;
 };
+
 
 static void mem_clear(NqMem *m) { std::memset(m, 0, sizeof(*m)); }
 
@@ -448,7 +475,7 @@ static void mem_free(NqMem *m) {
     void *dptrs[] = {m->A, m->Az, m->Au, m->B, m->Bz, m->Bu, m->XA, m->XB, m->PA, m->PB,
                      m->sys, m->rhs, m->absW, m->u, m->v, m->tmp, m->inv, m->s1, m->s2,
                      m->norm_i, m->norm_o, m->Us, m->Vs, m->num, m->den, m->acc_pr, m->acc_nrm,
-                     m->tile[0], m->tile[1]};
+                     m->tile[0], m->tile[1], m->sol_work, m->sol_info};
     for (size_t i = 0; i < sizeof dptrs / sizeof dptrs[0]; ++i) {
         if (dptrs[i]) cudaFree(dptrs[i]);
     }
@@ -706,20 +733,25 @@ static int svid_device(cublasHandle_t h, cudaStream_t st, const float *W, int p,
 }
 
 /* y_is_wt: 0 = Y is W (m_y = n_W) streamed as row tiles; 1 = Y is W^T streamed as packed columns. */
-static int admm_solve_streamed(cublasHandle_t h, NqMem *d, const float *X, int n, int r, const float *W_host, int m_w,
-                               int n_w, int y_is_wt, const float *Z, const float *U, int m, float rho, float reg,
-                               float eps, float *Out) {
+static void dtranspose(cudaStream_t st, const float *A, float *At, int m, int n);
+
+static int admm_solve_streamed(cublasHandle_t h, cusolverDnHandle_t sol, NqMem *d, const float *X, int n, int r,
+                               const float *W_host, int m_w, int n_w, int y_is_wt, const float *Z, const float *U, int m,
+                               float rho, float reg, float eps, float *Out) {
     if (cublasSetStream(h, d->compute) != CUBLAS_STATUS_SUCCESS) return 0;
+    if (cusolverDnSetStream(sol, d->compute) != CUSOLVER_STATUS_SUCCESS) return 0;
     if (!dgemm(h, 1, 0, r, r, n, 1.0f, X, X, 0.0f, d->sys)) return 0;
-    if (cudaMemcpyAsync(d->h_sys, d->sys, (size_t)r * (size_t)r * sizeof(float), cudaMemcpyDeviceToHost, d->compute) !=
-        cudaSuccess)
+    nq_k_diag_abs_sum<<<1, 1, 0, d->compute>>>(d->sys, r, d->tmp);
+    float diag_sum = 0.0f;
+    if (cudaMemcpyAsync(&diag_sum, d->tmp, sizeof(float), cudaMemcpyDeviceToHost, d->compute) != cudaSuccess)
         return 0;
     if (cudaStreamSynchronize(d->compute) != cudaSuccess) return 0;
-    double diag_mean = 0.0;
-    for (int i = 0; i < r; ++i) diag_mean += std::fabs((double)d->h_sys[i * r + i]);
-    diag_mean = (r > 0) ? diag_mean / (double)r : 0.0;
-    float stab = (float)(rho * diag_mean + (double)reg);
+    const float diag_mean = (r > 0) ? (diag_sum / (float)r) : 0.0f;
+    float stab = rho * diag_mean + reg;
     if (stab < eps) stab = eps;
+    nq_k_symmetrize<<<g2(r, r), b2(), 0, d->compute>>>(d->sys, r);
+    nq_k_add_stab<<<div_up(r, 256), 256, 0, d->compute>>>(d->sys, r, stab);
+
     d->ev_used_recorded[0] = d->ev_used_recorded[1] = 0;
     int ok = 0;
     if (y_is_wt)
@@ -728,14 +760,22 @@ static int admm_solve_streamed(cublasHandle_t h, NqMem *d, const float *X, int n
         ok = stream_Xt_W(h, d, X, n, r, W_host, n_w, d->rhs);
     if (!ok) return 0;
     launch_rhs_add(d->compute, d->rhs, Z, U, rho, r * m);
-    if (cudaMemcpyAsync(d->h_rhs, d->rhs, (size_t)r * (size_t)m * sizeof(float), cudaMemcpyDeviceToHost, d->compute) !=
-        cudaSuccess)
+
+    /* Row-major r x m is column-major m x r in memory. Transpose into absW so cuSOLVER
+     * sees an r x m column-major right-hand side (lda = r, nrhs = m). */
+    dtranspose(d->compute, d->rhs, d->absW, r, m);
+    if (cusolverDnSpotrf(sol, CUBLAS_FILL_MODE_LOWER, r, d->sys, r, d->sol_work, d->sol_lwork, d->sol_info) !=
+        CUSOLVER_STATUS_SUCCESS)
+        return 0;
+    if (cusolverDnSpotrs(sol, CUBLAS_FILL_MODE_LOWER, r, m, d->sys, r, d->absW, r, d->sol_info) !=
+        CUSOLVER_STATUS_SUCCESS)
+        return 0;
+    int info = 0;
+    if (cudaMemcpyAsync(&info, d->sol_info, sizeof(int), cudaMemcpyDeviceToHost, d->compute) != cudaSuccess)
         return 0;
     if (cudaStreamSynchronize(d->compute) != cudaSuccess) return 0;
-    cholesky_solve(r, d->h_sys, m, d->h_rhs, stab, eps);
-    if (cudaMemcpyAsync(Out, d->h_rhs, (size_t)r * (size_t)m * sizeof(float), cudaMemcpyHostToDevice, d->compute) !=
-        cudaSuccess)
-        return 0;
+    if (info != 0) return 0;
+    dtranspose(d->compute, d->absW, Out, m, r);
     return cudaStreamSynchronize(d->compute) == cudaSuccess;
 }
 
@@ -858,35 +898,65 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
     }
 
     cublasHandle_t blas = nullptr;
+    cusolverDnHandle_t solver = nullptr;
     if (cublasCreate(&blas) != CUBLAS_STATUS_SUCCESS) {
         set_error(error, errcap, "could not create a cuBLAS handle");
         return PCHIE_NQ_BAD_ARGUMENT;
     }
     cublasSetMathMode(blas, CUBLAS_PEDANTIC_MATH);
+    if (cusolverDnCreate(&solver) != CUSOLVER_STATUS_SUCCESS) {
+        set_error(error, errcap, "could not create a cuSOLVER handle");
+        cublasDestroy(blas);
+        return PCHIE_NQ_BAD_ARGUMENT;
+    }
 
     NqMem d;
     mem_clear(&d);
     if (!create_streams(&d)) {
         set_error(error, errcap, "could not create CUDA streams");
-        cublasDestroy(blas);
         mem_free(&d);
+        cusolverDnDestroy(solver);
+        cublasDestroy(blas);
         return PCHIE_NQ_BAD_ARGUMENT;
     }
     if (!mem_alloc_persistent(&d, m, n, r, error, errcap)) {
+        mem_free(&d);
+        cusolverDnDestroy(solver);
         cublasDestroy(blas);
         return PCHIE_NQ_NO_MEMORY;
     }
     if (!mem_alloc_tiles(&d, m, n, error, errcap)) {
-        cublasDestroy(blas);
         mem_free(&d);
+        cusolverDnDestroy(solver);
+        cublasDestroy(blas);
         return PCHIE_NQ_TOO_LARGE;
     }
     if (cublasSetStream(blas, d.compute) != CUBLAS_STATUS_SUCCESS) {
         set_error(error, errcap, "could not bind cuBLAS to the compute stream");
         mem_free(&d);
+        cusolverDnDestroy(solver);
         cublasDestroy(blas);
         return PCHIE_NQ_BAD_ARGUMENT;
     }
+    if (cusolverDnSetStream(solver, d.compute) != CUSOLVER_STATUS_SUCCESS ||
+        cusolverDnSpotrf_bufferSize(solver, CUBLAS_FILL_MODE_LOWER, r, d.sys, r, &d.sol_lwork) !=
+            CUSOLVER_STATUS_SUCCESS) {
+        set_error(error, errcap, "could not size the cuSOLVER workspace");
+        mem_free(&d);
+        cusolverDnDestroy(solver);
+        cublasDestroy(blas);
+        return PCHIE_NQ_BAD_ARGUMENT;
+    }
+    if (d.sol_lwork < 1) d.sol_lwork = 1;
+    if (cudaMalloc(&d.sol_work, (size_t)d.sol_lwork * sizeof(float)) != cudaSuccess ||
+        cudaMalloc(&d.sol_info, sizeof(int)) != cudaSuccess) {
+        set_error(error, errcap, "could not allocate the cuSOLVER workspace");
+        mem_free(&d);
+        cusolverDnDestroy(solver);
+        cublasDestroy(blas);
+        return PCHIE_NQ_NO_MEMORY;
+    }
+    d.bytes += (size_t)d.sol_lwork * sizeof(float) + sizeof(int);
 
     std::vector<float> norm_i((size_t)n, 1.0f), norm_o((size_t)m, 1.0f);
     for (int j = 0; j < n; ++j) {
@@ -894,6 +964,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
         if (!(v >= 0.0f) || !std::isfinite(v)) {
             set_error(error, errcap, "a Hessian diagonal entry is not a finite non-negative number");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
@@ -906,6 +977,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
         if (!(v >= 0.0f) || !std::isfinite(v)) {
             set_error(error, errcap, "a Hessian diagonal entry is not a finite non-negative number");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
@@ -944,6 +1016,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
     if (cudaStreamSynchronize(d.compute) != cudaSuccess) {
         set_error(error, errcap, "failed to upload the initial factors");
         mem_free(&d);
+        cusolverDnDestroy(solver);
         cublasDestroy(blas);
         return PCHIE_NQ_BAD_ARGUMENT;
     }
@@ -953,6 +1026,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
             !svid_device(blas, d.compute, d.B, r, n, cfg->inner_iters, &rng, eps, d.Bz, d.absW, d.u, d.v, d.tmp)) {
             set_error(error, errcap, "SVID failed on the device");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
@@ -969,6 +1043,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
         if (!col_normalize_T_dev(d.compute, d.Bz, r, n, eps, d.XA, d.inv)) {
             set_error(error, errcap, "column normalize failed");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
@@ -977,13 +1052,15 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
         if (cudaStreamSynchronize(d.compute) != cudaSuccess) {
             set_error(error, errcap, "failed to prepare the U-update");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
         /* X is n x r, Y is W^T (n x m), Out is r x m. */
-        if (!admm_solve_streamed(blas, &d, d.XA, n, r, d.h_Wn, m, n, 1, d.PA, d.XB, m, rho, cfg->reg, eps, d.rhs)) {
+        if (!admm_solve_streamed(blas, solver, &d, d.XA, n, r, d.h_Wn, m, n, 1, d.PA, d.XB, m, rho, cfg->reg, eps, d.rhs)) {
             set_error(error, errcap, "ADMM U-update failed");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
@@ -992,19 +1069,22 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
         if (!row_normalize_dev(d.compute, d.Az, m, r, eps, d.XB, d.inv)) {
             set_error(error, errcap, "row normalize failed");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
         if (cudaStreamSynchronize(d.compute) != cudaSuccess) {
             set_error(error, errcap, "failed to prepare the V-update");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
         /* X is m x r, Y is W (m x n), Out is r x n. */
-        if (!admm_solve_streamed(blas, &d, d.XB, m, r, d.h_Wn, m, n, 0, d.Bz, d.Bu, n, rho, cfg->reg, eps, d.B)) {
+        if (!admm_solve_streamed(blas, solver, &d, d.XB, m, r, d.h_Wn, m, n, 0, d.Bz, d.Bu, n, rho, cfg->reg, eps, d.B)) {
             set_error(error, errcap, "ADMM V-update failed");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
@@ -1015,6 +1095,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
             !svid_device(blas, d.compute, d.PB, r, n, cfg->inner_iters, &rng, eps, d.Bz, d.absW, d.u, d.v, d.tmp)) {
             set_error(error, errcap, "SVID failed during ADMM");
             mem_free(&d);
+            cusolverDnDestroy(solver);
             cublasDestroy(blas);
             return PCHIE_NQ_BAD_ARGUMENT;
         }
@@ -1034,6 +1115,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
     if (!device_nrm2(d.compute, d.A, m * r, d.tmp, &nA) || !device_nrm2(d.compute, d.B, r * n, d.tmp, &nB)) {
         set_error(error, errcap, "failed to measure factor norms on the device");
         mem_free(&d);
+        cusolverDnDestroy(solver);
         cublasDestroy(blas);
         return PCHIE_NQ_BAD_ARGUMENT;
     }
@@ -1054,6 +1136,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
     if (cudaStreamSynchronize(d.compute) != cudaSuccess) {
         set_error(error, errcap, "a CUDA kernel failed after the ADMM loop");
         mem_free(&d);
+        cusolverDnDestroy(solver);
         cublasDestroy(blas);
         return PCHIE_NQ_BAD_ARGUMENT;
     }
@@ -1061,6 +1144,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
     if (!polish_scales(&d, d.h_src, m, n, r) || cudaGetLastError() != cudaSuccess) {
         set_error(error, errcap, "a CUDA kernel failed during the scale polish");
         mem_free(&d);
+        cusolverDnDestroy(solver);
         cublasDestroy(blas);
         return PCHIE_NQ_BAD_ARGUMENT;
     }
@@ -1090,6 +1174,7 @@ extern "C" pchie_nq_status pchie_nq_factorize_cuda(const float *w, int rows, int
     }
 
     mem_free(&d);
+    cusolverDnDestroy(solver);
     cublasDestroy(blas);
     return PCHIE_NQ_OK;
 }

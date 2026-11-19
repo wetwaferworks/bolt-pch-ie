@@ -53,7 +53,7 @@ double-buffered tiles with `cudaMemcpyAsync` on a pair of copy streams that
 overlap the cuBLAS work. Tile size is chosen from `cudaMemGetInfo` at the start
 of each tensor, leaving 256 MiB of device memory in reserve so a 4 GB card is
 not asked to page through WDDM shared memory. cuBLAS runs in pedantic / IEEE
-mode (no TF32). The small r×r Cholesky solve stays on the host.
+mode (no TF32). The r×r system is factored and solved on the device (cuSOLVER) so the many right-hand sides do not sit on the host.
 
 CPU vs CUDA parity is checked in `pchie_nanoquant_test` on small matrices, with
 documented tolerances:
