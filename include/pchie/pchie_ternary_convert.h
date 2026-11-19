@@ -145,7 +145,9 @@ typedef struct ternary_cuda_counters {
 
 ternary_cuda_info ternary_query_cuda_info(void);
 /* Same contract and same bits as ternary_fit_groups_cpu. Device buffers are kept between calls and grow as needed;
- * ternary_cuda_release() frees them. Returns OK, NON_FINITE (outputs zeroed) or BAD_ARGUMENT; error has CUDA errors. */
+ * ternary_cuda_release() frees them. Returns OK, NON_FINITE (outputs zeroed) or BAD_ARGUMENT; error has CUDA errors.
+ * One caller at a time: the buffers are process-wide, so a call made while another thread's call is running is
+ * refused (BAD_ARGUMENT). Do not call ternary_cuda_release() while a fit is running. */
 ternary_convert_status ternary_fit_groups_cuda(const float *weights, uint64_t group_count, ternary_group_fit_kind fit_kind,
                                                int8_t *codes, float *scales, char *error, size_t error_capacity);
 const ternary_cuda_counters *ternary_query_cuda_counters(void);

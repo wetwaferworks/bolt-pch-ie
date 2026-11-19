@@ -18,9 +18,12 @@ namespace pchie {
 bool cuda_query(CudaInfo& o, std::string& err) {
     int n = 0;
     if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { err = "no CUDA device"; return false; }
-    cudaDeviceProp p; cudaGetDeviceProperties(&p, 0);
+    cudaDeviceProp p;
+    cudaError_t e = cudaGetDeviceProperties(&p, 0);
+    if (e != cudaSuccess) { err = std::string("cudaGetDeviceProperties failed: ") + cudaGetErrorString(e); return false; }
     o.name = p.name; o.sm = p.major * 10 + p.minor;
-    cudaMemGetInfo(&o.free_bytes, &o.total_bytes);
+    e = cudaMemGetInfo(&o.free_bytes, &o.total_bytes);
+    if (e != cudaSuccess) { err = std::string("cudaMemGetInfo failed: ") + cudaGetErrorString(e); return false; }
     return true;
 }
 

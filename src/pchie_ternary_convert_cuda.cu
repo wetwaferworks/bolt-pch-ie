@@ -11,6 +11,7 @@
 #include "pchie/pchie_ternary_convert.h"
 
 #include <cuda_runtime.h>
+#include <atomic>
 #include <math.h>
 #include <string.h>
 
@@ -90,6 +91,7 @@ typedef struct ternary_device_buffers {
 /* Single-threaded use by contract (one converter per process drives the GPU); no lock needed. */
 static ternary_device_buffers g_buffers;
 static ternary_cuda_counters g_counters;
+static std::atomic<int> g_busy{0};  /* one fit at a time (see ternary_fit_groups_cuda) */
 
 static int check_cuda(cudaError_t status, const char *what, char *error, size_t error_capacity) {
     if (status == cudaSuccess) return 1;
@@ -160,7 +162,8 @@ ternary_convert_status ternary_fit_groups_cuda(const float *weights, uint64_t gr
                                                int8_t *codes, float *scales, char *error, size_t error_capacity) {
     const uint64_t weight_count = group_count * TERNARY_GROUP_WEIGHT_COUNT;
     uint64_t i;
-    cudaEvent_t e0, e1, e2, e3;
+    cudaEvent_t ev[4] = {0, 0, 0, 0};
+    int made = 0, k;
     int ok = 1;
     float copy_in = 0, kernel = 0, copy_out = 0;
     if (!weights || !codes || !scales || group_count == 0 || (unsigned)fit_kind > 1) return TERNARY_CONVERT_BAD_ARGUMENT;
@@ -173,17 +176,26 @@ ternary_convert_status ternary_fit_groups_cuda(const float *weights, uint64_t gr
     }
     if (group_count > (UINT64_C(1) << 40)) return TERNARY_CONVERT_TOO_LARGE;
     if (error && error_capacity) error[0] = 0;
-    if (!ensure_device_buffers(group_count, error, error_capacity)) return TERNARY_CONVERT_BAD_ARGUMENT;
 
-    cudaEventCreate(&e0);
-    cudaEventCreate(&e1);
-    cudaEventCreate(&e2);
-    cudaEventCreate(&e3);
-    cudaEventRecord(e0);
+    /* One caller at a time: the device buffers and counters are shared by the whole process. A second caller
+     * while one is running is refused (no lock: a compare-exchange on one flag). */
+    {
+        int expect = 0;
+        if (!g_busy.compare_exchange_strong(expect, 1)) {
+            ternary_set_errorf(error, error_capacity, "the CUDA fit is already running on another thread");
+            return TERNARY_CONVERT_BAD_ARGUMENT;
+        }
+    }
+    if (!ensure_device_buffers(group_count, error, error_capacity)) { g_busy.store(0); return TERNARY_CONVERT_BAD_ARGUMENT; }
+    for (k = 0; k < 4 && ok; ++k) {
+        ok = check_cuda(cudaEventCreate(&ev[k]), "create a timing event", error, error_capacity);
+        if (ok) ++made;
+    }
+    ok = ok && check_cuda(cudaEventRecord(ev[0]), "record a timing event", error, error_capacity);
     ok = ok && check_cuda(cudaMemcpy(g_buffers.weights, weights, (size_t)weight_count * sizeof(float),
                                      cudaMemcpyHostToDevice),
                           "copy weights", error, error_capacity);
-    cudaEventRecord(e1);
+    ok = ok && check_cuda(cudaEventRecord(ev[1]), "record a timing event", error, error_capacity);
     if (ok) {
         const unsigned long long blocks = (group_count + TERNARY_GROUPS_PER_BLOCK - 1) / TERNARY_GROUPS_PER_BLOCK;
         if (blocks > 0x7FFFFFFFull) {
@@ -195,24 +207,24 @@ ternary_convert_status ternary_fit_groups_cuda(const float *weights, uint64_t gr
             ok = check_cuda(cudaGetLastError(), "fit kernel launch", error, error_capacity);
         }
     }
-    cudaEventRecord(e2);
+    ok = ok && check_cuda(cudaEventRecord(ev[2]), "record a timing event", error, error_capacity);
     ok = ok && check_cuda(cudaMemcpy(codes, g_buffers.codes, (size_t)weight_count, cudaMemcpyDeviceToHost),
                           "copy codes", error, error_capacity);
     ok = ok && check_cuda(cudaMemcpy(scales, g_buffers.scales, (size_t)group_count * sizeof(float),
                                      cudaMemcpyDeviceToHost),
                           "copy scales", error, error_capacity);
-    cudaEventRecord(e3);
-    cudaEventSynchronize(e3);
-    cudaEventElapsedTime(&copy_in, e0, e1);
-    cudaEventElapsedTime(&kernel, e1, e2);
-    cudaEventElapsedTime(&copy_out, e2, e3);
-    cudaEventDestroy(e0);
-    cudaEventDestroy(e1);
-    cudaEventDestroy(e2);
-    cudaEventDestroy(e3);
-    g_counters.copy_milliseconds += (double)copy_in + (double)copy_out;
-    g_counters.kernel_milliseconds += (double)kernel;
-    g_counters.call_count++;
+    ok = ok && check_cuda(cudaEventRecord(ev[3]), "record a timing event", error, error_capacity);
+    ok = ok && check_cuda(cudaEventSynchronize(ev[3]), "wait for the fit", error, error_capacity);
+    ok = ok && check_cuda(cudaEventElapsedTime(&copy_in, ev[0], ev[1]), "read a timing event", error, error_capacity);
+    ok = ok && check_cuda(cudaEventElapsedTime(&kernel, ev[1], ev[2]), "read a timing event", error, error_capacity);
+    ok = ok && check_cuda(cudaEventElapsedTime(&copy_out, ev[2], ev[3]), "read a timing event", error, error_capacity);
+    for (k = 0; k < made; ++k) cudaEventDestroy(ev[k]);
+    if (ok) {
+        g_counters.copy_milliseconds += (double)copy_in + (double)copy_out;
+        g_counters.kernel_milliseconds += (double)kernel;
+        g_counters.call_count++;
+    }
+    g_busy.store(0);
     if (!ok) {
         memset(codes, 0, (size_t)weight_count);
         memset(scales, 0, (size_t)group_count * sizeof(float));
