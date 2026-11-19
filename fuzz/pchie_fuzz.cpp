@@ -2,11 +2,13 @@
 // the TESLA stream lines read by the watcher, and the GGUF reader. It mutates built-in seeds with a fixed
 // pseudo-random sequence, so a run is reproducible from its seed. Build it with PCHIE_FUZZ=ON, ideally
 // together with PCHIE_SANITIZE=address,undefined; any crash or sanitizer report is a finding.
-//   pchie_fuzz <json|tesla|gguf|all> [iterations] [seed]
+// Also the NEML save files: the receipt ring and the hash-chained journal behind it (neml, neml-journal).
+//   pchie_fuzz <json|tesla|gguf|neml|neml-journal|all> [iterations] [seed]
 #include "pchie/MiniJson.h"
 #include "pchie/TeslaStream.h"
 #include "pchie/TeslaWatcher.h"
 #include "pchie/pchie_gguf.h"
+#include "pchie/neml/NemlStore.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -126,6 +128,109 @@ std::vector<Bytes> gguf_seeds() {
   return {b};
 }
 
+// ---- NEML ring: parse, then everything a load does with it ----
+bool run_neml(const Bytes& in) {
+  neml::Ring q;
+  if (!q.parse(in)) return false;
+  const auto o = q.ordered();
+  size_t tk = 0;
+  const neml::TokenCount ntok = [](const std::string& x) { return x.size() / 4; };
+  (void)neml::digest(o, q.total(), ntok, 384, &tk);
+  (void)neml::priors(o);
+  Bytes st = in, pay(sizeof(neml::MazeRunReceipt), 0);
+  neml::MazeRunReceipt r{};
+  r.run_id = uint32_t(q.total() + 1);
+  std::memcpy(pay.data(), &r, sizeof r);
+  std::string why;
+  if (!neml::ring_apply('R', pay, st, why) || st.size() != neml::kRingBytes) std::abort();  // a ring that parses always takes the next receipt
+  neml::Ring back;
+  if (!back.parse(st) || back.total() != q.total() + 1) std::abort();
+  return true;
+}
+std::vector<Bytes> neml_seeds() {
+  neml::Ring ring;
+  for (int k = 0; k < 20; ++k) { neml::MazeRunReceipt r{}; r.key_events[0].event_type = uint8_t(k % 5); ring.append(r); }
+  return {ring.bytes(), Bytes{}};
+}
+
+// ---- NEML journal: the line parser and the chain check. Half the mutants get their chain fields recomputed,
+// so the apply step sees arbitrary payloads, not only lines whose hash already failed. ----
+Bytes rechain(const Bytes& in) {
+  std::string s(in.begin(), in.end()), out, prev = neml::zero_sha();
+  std::vector<uint8_t> state;
+  size_t at = 0;
+  uint64_t seq = 0;
+  while (at < s.size()) {
+    size_t nl = s.find('\n', at);
+    if (nl == std::string::npos) { out += s.substr(at); break; }
+    std::string line = s.substr(at, nl - at);
+    at = nl + 1;
+    std::vector<std::string> f;
+    size_t st = 0;
+    for (size_t i = 0; i <= line.size(); ++i) if (i == line.size() || line[i] == '|') { f.push_back(line.substr(st, i - st)); st = i + 1; }
+    if (f.size() != 7 || f[2].size() != 1) { out += line + "\n"; continue; }
+    std::vector<uint8_t> pay;
+    if (!neml::unhex(f[4].data(), f[4].size(), pay)) { out += line + "\n"; continue; }
+    std::vector<uint8_t> next = state;
+    std::string why;
+    if (f[2][0] == 'G') next = pay; else if (!neml::ring_apply(f[2][0], pay, next, why)) next = state;
+    const std::string l = neml::journal_line(seq++, f[2][0], prev, pay, neml::sha_hex(next));
+    prev = neml::sha_hex(l.substr(0, l.size() - 66));
+    state = next;
+    out += l;
+  }
+  return Bytes(out.begin(), out.end());
+}
+bool g_rechain_flip = false;
+bool run_neml_journal(const Bytes& raw) {
+  g_rechain_flip = !g_rechain_flip;
+  const Bytes in = g_rechain_flip ? rechain(raw) : raw;
+  neml::JournalView v;
+  std::string why;
+  const bool ok = neml::journal_check(in, neml::ring_apply, v, why);
+  if (ok) {
+    size_t lines = 0;
+    for (size_t i = 0; i < v.good_bytes; ++i) lines += in[i] == '\n';
+    if (lines != v.records || v.line_sha.size() != v.records || v.good_bytes > in.size()) std::abort();
+    if (!v.torn && v.good_bytes != in.size()) std::abort();
+    if (v.records && neml::sha_hex(v.state) != v.state_sha) std::abort();
+    // a clean prefix of a good journal is good too
+    if (v.records > 1) {
+      Bytes pre(in.begin(), in.begin() + long(v.good_bytes));
+      size_t cut = pre.size() - 1;
+      while (cut > 0 && pre[cut - 1] != '\n') --cut;
+      pre.resize(cut);
+      neml::JournalView w;
+      if (!neml::journal_check(pre, neml::ring_apply, w, why) || w.records != v.records - 1 || w.torn) std::abort();
+    }
+  }
+  return ok && !v.torn;
+}
+std::vector<Bytes> neml_journal_seeds() {
+  std::string j, prev = neml::zero_sha();
+  std::vector<uint8_t> state;
+  auto add = [&](uint64_t seq, char kind, const std::vector<uint8_t>& pay) {
+    std::vector<uint8_t> next = state;
+    std::string why;
+    if (kind == 'G') next = pay; else (void)neml::ring_apply(kind, pay, next, why);
+    const std::string l = neml::journal_line(seq, kind, prev, pay, neml::sha_hex(next));
+    prev = neml::sha_hex(l.substr(0, l.size() - 66));
+    state = next;
+    j += l;
+  };
+  add(0, 'G', {});
+  for (uint32_t k = 0; k < 4; ++k) {
+    neml::MazeRunReceipt r{};
+    r.run_id = k + 1;
+    r.total_steps = uint16_t(10 + k);
+    std::vector<uint8_t> pay(sizeof r);
+    std::memcpy(pay.data(), &r, sizeof r);
+    add(k + 1, 'R', pay);
+  }
+  Bytes full(j.begin(), j.end()), torn(full.begin(), full.end() - 40);
+  return {full, torn};
+}
+
 int fuzz(const char* name, bool (*run)(const Bytes&), const std::vector<Bytes>& seeds, long iters, uint64_t seed, size_t max_len) {
   Rng r{seed * 0x9E3779B97F4A7C15ull + 1};
   long seeds_ok = 0, accepted = 0;
@@ -151,6 +256,8 @@ int main(int argc, char** argv) {
   if (which == "json" || which == "all") fuzz("json", run_json, json_seeds(), iters, seed, 4096);
   if (which == "tesla" || which == "all") fuzz("tesla", run_tesla, tesla_seeds(), iters, seed, 8192);
   if (which == "gguf" || which == "all") fuzz("gguf", run_gguf, gguf_seeds(), iters, seed, 4096);
+  if (which == "neml" || which == "all") fuzz("neml", run_neml, neml_seeds(), iters, seed, 8192);
+  if (which == "neml-journal" || which == "all") fuzz("neml-journal", run_neml_journal, neml_journal_seeds(), iters, seed, 16384);
   std::error_code ec; std::filesystem::remove(g_gguf_tmp, ec);
   return 0;
 }

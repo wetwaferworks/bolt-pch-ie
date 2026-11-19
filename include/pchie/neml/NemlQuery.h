@@ -17,30 +17,37 @@ namespace pchie {
 namespace neml {
 
 struct Snapshot {
-  std::vector<uint8_t> bytes;     // ring bytes exactly as read (empty = empty ledger)
+  std::vector<uint8_t> bytes;     // ring bytes as checked against the journal (empty = empty ledger)
   std::vector<uint8_t> sha256;    // SHA-256 of bytes (of the empty string for an empty ledger)
   std::vector<MazeRunReceipt> runs;  // oldest -> newest
-  uint32_t lifetime = 0;
-  bool ok = true;                 // false: the file was unreadable, and the snapshot is treated as empty
+  uint64_t lifetime = 0;
+  bool ok = true;                 // false: the ledger was refused (see why); the snapshot holds no memory
   bool busy = false;              // true: another writer held the ledger lock, so nothing was read
+  std::string why;                // why the ledger was refused (empty when ok)
 
   static Snapshot from_bytes(const std::vector<uint8_t>& b) {
     Snapshot s;
     Ring r;
     s.ok = r.parse(b);
-    if (s.ok) { s.bytes = b; s.runs = r.ordered(); s.lifetime = r.h.total_written; }
+    if (s.ok) { s.bytes = b; s.runs = r.ordered(); s.lifetime = r.total(); }
+    else s.why = "unreadable ledger bytes";
     s.sha256 = Sha256::hash(s.bytes.data(), s.bytes.size());
     return s;
   }
   static Snapshot empty() { return from_bytes({}); }
-  // Takes the snapshot from the ledger file (under the write lock, so a half-written file is never read).
+  // Takes the snapshot from the ledger (under the save lock, checked against its journal). A ledger that fails
+  // its checks gives ok=false and why; callers must not treat that as an empty memory.
   static Snapshot take(const Config& c) {
     const std::string dir = resolved_dir(c);
     std::error_code ec;
-    if (!std::filesystem::exists(ring_path(c), ec)) return empty();
-    WriteLock lock(dir);
-    if (!lock.held()) { Snapshot s = empty(); s.ok = false; s.busy = true; return s; }
-    return from_bytes(read_file(ring_path(c)));
+    if (!std::filesystem::exists(ring_path(c), ec) && !std::filesystem::exists(ring_journal_path(c), ec)) return empty();
+    SaveLock lock(dir);
+    if (!lock.held()) { Snapshot s = empty(); s.ok = false; s.busy = true; s.why = busy_text(); return s; }
+    Ring r;
+    Loaded ld;
+    std::string why;
+    if (!load_ring(c, r, &why, &ld)) { Snapshot s = empty(); s.ok = false; s.why = why; return s; }
+    return from_bytes(ld.state);
   }
 };
 

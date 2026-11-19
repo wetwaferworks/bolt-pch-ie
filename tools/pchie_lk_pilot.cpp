@@ -228,7 +228,12 @@ int main(int argc, char** argv) {
   const neml::Config& ncfg = neml::process_config();
   neml::Snapshot mem_snap = neml::Snapshot::empty();
   if (ncfg.memory_prior) mem_snap = neml::Snapshot::take(ncfg);
-  if (!mem_snap.ok) say("NEML: ledger unreadable, memory prior not used");
+  if (!mem_snap.ok) {
+    // A damaged or busy ledger is never used as an empty memory: stop, so the run is not quietly a different run.
+    say("FAIL NEML: the memory ledger was refused: %s", mem_snap.why.c_str());
+    say("     fix or move the ledger folder (pchie_neml --verify says what is wrong), or run with --neml-reason off");
+    return 1;
+  }
   if (ncfg.memory_prior && !mem_snap.runs.empty()) {
     driver.set_memory(&mem_snap);
     say("NEML memory prior ON: snapshot of %zu past runs sha256=%s (hashed into the side chain; hashes will differ from the official run)",

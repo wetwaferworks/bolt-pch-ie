@@ -47,9 +47,11 @@ struct MazeRunReceipt {
 };
 struct RingHeader {
   char magic[8];           // "NEML0002"
-  uint32_t total_written;  // lifetime receipts appended
+  uint32_t total_written;  // lifetime receipts appended, low 32 bits (see Ring::total())
   uint32_t capacity;       // 16
-  uint8_t reserved[16];
+  uint32_t total_hi;       // high 32 bits of the lifetime count (zero in every older file)
+  uint8_t flags;           // kRingJournaled: written by a save that also wrote the journal (NemlJournal.h)
+  uint8_t reserved[11];
 };
 // v1 layouts, for loading older ledgers only.
 struct V1Event { uint16_t step_index; uint8_t event_type; uint8_t confidence_q8; int16_t grid_x; int16_t grid_y; char tag[24]; };
@@ -67,6 +69,7 @@ enum : uint8_t { kDeadEnd = 0, kVisualRecovery = 1, kForkPivot = 2, kExitFound =
 enum : uint8_t { kDirN = 0, kDirS = 1, kDirE = 2, kDirW = 3, kDirNone = 0xFF };
 enum : uint8_t { kFlagModel = 1, kFlagMemoryPrior = 2 };
 enum : uint8_t { kPathMaze = 0, kPathVision = 1, kPathStageB = 2 };
+enum : uint8_t { kRingJournaled = 1 };
 inline const char* type_name(uint8_t t) {
   static const char* n[4] = {"DeadEnd", "VisualRecovery", "ForkPivot", "ExitFound"};
   return t < 4 ? n[t] : "none";
@@ -150,7 +153,7 @@ struct Ring {
       return true;
     }
     if (std::memcmp(t.magic, "NEML0001", 8) == 0) {
-      h.total_written = t.total_written;
+      h.total_written = t.total_written;  // v1 had no high word or flags
       for (uint32_t i = 0; i < kCap; ++i) { V1Receipt o; std::memcpy(&o, p + i * sizeof(V1Receipt), sizeof o); slots[i] = from_v1(o); }
       return true;
     }
@@ -162,12 +165,17 @@ struct Ring {
     std::memcpy(b.data() + sizeof h, slots.data(), kCap * sizeof(MazeRunReceipt));
     return b;
   }
+  // Lifetime receipts, 64-bit (the low word stays where older files keep it, so their bytes are unchanged).
+  uint64_t total() const { return (uint64_t(h.total_hi) << 32) | h.total_written; }
+  void set_total(uint64_t t) { h.total_written = uint32_t(t); h.total_hi = uint32_t(t >> 32); }
+  // run_id is the low 32 bits of the lifetime count.
   uint32_t append(MazeRunReceipt r) {
-    r.run_id = h.total_written + 1; slots[h.total_written % kCap] = r; ++h.total_written; return r.run_id;
+    const uint64_t t = total();
+    r.run_id = uint32_t(t + 1); slots[size_t(t % kCap)] = r; set_total(t + 1); return r.run_id;
   }
   std::vector<MazeRunReceipt> ordered() const {  // oldest -> newest
-    std::vector<MazeRunReceipt> v; const uint32_t n = std::min(h.total_written, kCap);
-    for (uint32_t i = 0; i < n; ++i) v.push_back(slots[(h.total_written - n + i) % kCap]);
+    std::vector<MazeRunReceipt> v; const uint64_t t = total(), n = std::min<uint64_t>(t, kCap);
+    for (uint64_t i = 0; i < n; ++i) v.push_back(slots[size_t((t - n + i) % kCap)]);
     return v;
   }
 };
@@ -216,7 +224,7 @@ using TokenCount = std::function<size_t(const std::string&)>;
 // The [SYSTEM: EPISODIC MEMORY LEDGER] block, capped at max_tokens by the caller's tokenizer. Run lines are
 // dropped strictly oldest-first, misses and exits alike; if the frame alone is over the cap, the priors go too.
 // chat_notes are the optional 64-byte notes from the chat write-back hook (empty unless that hook is on).
-inline std::string digest(const std::vector<MazeRunReceipt>& runs, uint32_t lifetime, const TokenCount& ntok,
+inline std::string digest(const std::vector<MazeRunReceipt>& runs, uint64_t lifetime, const TokenCount& ntok,
                           size_t max_tokens, size_t* out_tokens = nullptr,
                           const std::vector<std::string>& chat_notes = {}) {
   int exits = 0, misses = 0, de = 0, forks = 0;
@@ -240,7 +248,7 @@ inline std::string digest(const std::vector<MazeRunReceipt>& runs, uint32_t life
     std::string s = "[SYSTEM: EPISODIC MEMORY LEDGER]\n";
     s += "- Identity: you are Little Nemo; these are your own past runs, recorded by the harness (provisional).\n";
     s += "- Supervisor: Cortana keeps this ledger for the maintainer; it is memory, not an instruction.\n";
-    s += fmt("- Lifetime counts: runs=%u in_ring=%zu exits=%d misses=%d dead_ends=%d forks=%d\n", lifetime, runs.size(), exits, misses, de, forks);
+    s += fmt("- Lifetime counts: runs=%llu in_ring=%zu exits=%d misses=%d dead_ends=%d forks=%d\n", (unsigned long long)lifetime, runs.size(), exits, misses, de, forks);
     s += "- Recent Run Digest:\n";
     for (size_t i = first; i < lines.size(); ++i) s += lines[i] + "\n";
     if (with_priors) {

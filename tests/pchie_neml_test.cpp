@@ -18,8 +18,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <atomic>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using namespace pchie;
 namespace fs = std::filesystem;
@@ -182,7 +189,7 @@ int main() {
     for (int i = 0; i < 16; ++i) ring.append(mk(i, i % 3 != 0, 7));
     size_t nt = 0;
     const std::vector<std::string> notes(16, std::string(63, 'n'));
-    const std::string d = neml::digest(ring.ordered(), ring.h.total_written, ntok, 384, &nt, notes);
+    const std::string d = neml::digest(ring.ordered(), ring.total(), ntok, 384, &nt, notes);
     check(nt <= 384 && ntok(d) == nt, "token cap: a full ring plus 16 chat notes stays <= 384 tokens");
     std::printf("[NEML] full block: %zu tokens\n", nt);
     check(d.rfind("[SYSTEM: EPISODIC MEMORY LEDGER]", 0) == 0 && d.find("[/SYSTEM]") != std::string::npos, "block: header and footer");
@@ -207,8 +214,8 @@ int main() {
     check(!neml::chat_writeback(c, "hello", err) && !fs::exists(neml::chat_path(c)), "chat write-back: OFF by default, nothing written");
     c.chat_writeback = true;
     check(neml::chat_writeback(c, std::string(100, 'x'), err), "chat write-back: when enabled, writes one note");
-    const auto notes = neml::load_chat_notes(c);
-    check(notes.size() == 1 && notes[0].size() == 63, "chat write-back: a note is at most 64 bytes");
+    std::vector<std::string> notes;
+    check(neml::load_chat_notes(c, notes, &err) && notes.size() == 1 && notes[0].size() == 63, "chat write-back: a note is at most 64 bytes");
     size_t nt = 0;
     const std::string blk = neml::memory_block(c, ntok, 384, &nt);
     check(blk.find("Notes from past chats") != std::string::npos && nt <= 384, "memory_block(): reads the ledger and notes under the cap");
@@ -297,26 +304,230 @@ int main() {
       check(m3.actions == plain.actions && m3.res.neml_memory_nudges == 0, "memory prior: memory of another maze changes nothing here");
     }
   }
-  // ---- cross-process ledger lock: stale takeover, fresh locks are left alone, busy snapshots ----
+  // ---- journal: every save is chained; a damaged ledger is refused, never cleared ----
+  {
+    auto bytes_of = [](const std::string& p) { return neml::read_file(p); };
+    auto put = [](const std::string& p, const std::vector<uint8_t>& b) { std::ofstream f(p, std::ios::binary | std::ios::trunc); f.write(reinterpret_cast<const char*>(b.data()), std::streamsize(b.size())); };
+    auto put_s = [&](const std::string& p, const std::string& t) { put(p, std::vector<uint8_t>(t.begin(), t.end())); };
+    auto str_of = [&](const std::string& p) { const auto b = bytes_of(p); return std::string(b.begin(), b.end()); };
+    auto add = [](const neml::Config& c, int i, std::string* e = nullptr) { neml::Recorder r; r.event(neml::kDeadEnd, i, 255, i, 0, "t", neml::kDirN); return neml::write_receipt(c, r, 10 + i, false, "j" + std::to_string(i), neml::ReceiptInfo{}, e); };
+    neml::Config c = cfg_in("journal");
+    std::string e;
+    bool all = true;
+    for (int i = 0; i < 20; ++i) all = all && add(c, i, &e) == uint32_t(i + 1);
+    neml::Ring r;
+    neml::Loaded ld;
+    check(all && neml::load_ring(c, r, &e, &ld) && r.total() == 20 && ld.has_journal && ld.records == 21 && !ld.pending,
+          "journal: 20 saves give a starting record plus 20 chained records");
+    const std::string ring_p = neml::ring_path(c), jp = neml::ring_journal_path(c);
+    const std::vector<uint8_t> good_ring = bytes_of(ring_p);
+    const std::string good_j = str_of(jp);
+
+    // tamper with one byte of the ring (a note) -> refused, and a save does not touch either file
+    std::vector<uint8_t> t = good_ring;
+    t[32 + 3 * 256 + 230] ^= 1;
+    put(ring_p, t);
+    check(!neml::load_ring(c, r, &e) && e.find("does not match its journal") != std::string::npos && r.total() == 0,
+          "tamper: an edited ring is refused, and the loaded ring is empty, not the edit");
+    check(add(c, 99, &e) == 0 && bytes_of(ring_p) == t && str_of(jp) == good_j, "tamper: a save refuses and changes neither file");
+    const neml::Snapshot ts = neml::Snapshot::take(c);
+    check(!ts.ok && !ts.why.empty() && ts.runs.empty(), "tamper: a snapshot reports the refusal (ok=false, why) instead of an empty memory");
+    size_t bt = 0;
+    std::string berr;
+    check(neml::memory_block(c, ntok, 384, &bt, &berr).empty() && !berr.empty(), "tamper: memory_block() refuses with a reason instead of an empty block");
+    put(ring_p, good_ring);
+    check(neml::load_ring(c, r, &e) && r.total() == 20, "tamper: putting the byte back loads again");
+
+    // tamper with one journal record, delete a record, reorder -> refused
+    {
+      std::string j = good_j;
+      const size_t at = j.find("|R|") + 3 + 64 + 1 + 100;
+      j[at] = j[at] == 'a' ? 'b' : 'a';
+      put_s(jp, j);
+      check(!neml::load_ring(c, r, &e) && e.find("hash does not match") != std::string::npos, "tamper: an edited journal record is refused");
+      std::string k = good_j;
+      const size_t l1 = k.find('\n') + 1, l2 = k.find('\n', l1) + 1;
+      k.erase(l1, l2 - l1);
+      put_s(jp, k);
+      check(!neml::load_ring(c, r, &e), "tamper: a removed journal record is refused");
+      put_s(jp, good_j);
+    }
+    // the journal removed, the ring removed -> refused (the ring says it was journaled)
+    fs::rename(jp, jp + ".away");
+    check(!neml::load_ring(c, r, &e) && e.find("journal") != std::string::npos, "tamper: a journaled ring without its journal is refused");
+    fs::rename(jp + ".away", jp);
+    fs::rename(ring_p, ring_p + ".away");
+    check(!neml::load_ring(c, r, &e), "tamper: a journal without its ring is refused");
+    fs::rename(ring_p + ".away", ring_p);
+
+    // a torn last line (a save cut short) -> refused; repair cuts only that, after checking the rest, with a backup
+    put_s(jp, good_j + "NEJ1|21|R|" + std::string(40, 'a'));
+    check(!neml::load_ring(c, r, &e) && e.find("torn") != std::string::npos, "torn line: refused, with the repair named");
+    size_t removed = 0;
+    std::string bak;
+    check(neml::journal_repair_tail(neml::ring_save(c), removed, bak, e) && removed == 50 && str_of(jp) == good_j &&
+              fs::exists(bak) && str_of(bak) == good_j + "NEJ1|21|R|" + std::string(40, 'a'),
+          "torn line: repair cuts exactly the partial line and keeps a full backup");
+    check(neml::load_ring(c, r, &e) && r.total() == 20, "torn line: the ledger loads after the repair");
+    check(!neml::journal_repair_tail(neml::ring_save(c), removed, bak, e) && removed == 0, "repair: nothing torn, nothing changed");
+    {
+      std::string j = good_j;
+      j[j.find("|R|") + 3] = j[j.find("|R|") + 3] == '0' ? '1' : '0';
+      put_s(jp, j + "NEJ1|2");
+      check(!neml::journal_repair_tail(neml::ring_save(c), removed, bak, e) && str_of(jp) == j + "NEJ1|2",
+            "repair: refuses when a complete record is bad, and leaves the file alone");
+      put_s(jp, good_j + "garbage");
+      check(!neml::journal_repair_tail(neml::ring_save(c), removed, bak, e) && str_of(jp) == good_j + "garbage",
+            "repair: refuses a tail that cannot be the start of a record");
+      put_s(jp, good_j);
+    }
+
+    // an interrupted save: the journal has the record but the ring does not -> loads, and the next save completes it
+    {
+      neml::Config c2 = cfg_in("journal-pending");
+      for (int i = 0; i < 3; ++i) (void)add(c2, i);
+      const auto ring3 = bytes_of(neml::ring_path(c2));
+      (void)add(c2, 3);
+      put(neml::ring_path(c2), ring3);  // as if the ring rewrite never landed
+      neml::Ring p;
+      neml::Loaded pl;
+      check(neml::load_ring(c2, p, &e, &pl) && pl.pending && p.total() == 4, "interrupted save: the journal's extra record is used");
+      check(add(c2, 4) == 5 && neml::load_ring(c2, p, &e, &pl) && !pl.pending && p.total() == 5, "interrupted save: the next save completes it");
+      put(neml::ring_path(c2), ring3);
+      check(!neml::load_ring(c2, p, &e), "interrupted save: a ring two records behind is refused");
+    }
+
+    // an older ledger without a journal: loads; the first save keeps its bytes as the journal's starting record
+    {
+      neml::Config c3 = cfg_in("journal-legacy");
+      fs::create_directories(c3.dir);
+      neml::Ring old;
+      for (int i = 0; i < 5; ++i) old.append(mk(i, true, 3));
+      put(neml::ring_path(c3), old.bytes());
+      neml::Ring p;
+      neml::Loaded pl;
+      check(neml::load_ring(c3, p, &e, &pl) && !pl.has_journal && p.total() == 5, "older ledger: loads without a journal");
+      check(add(c3, 5) == 6, "older ledger: the next save works");
+      const std::string j = str_of(neml::ring_journal_path(c3));
+      check(j.rfind("NEJ1|0|G|" + neml::zero_sha() + "|" + neml::hex_of(old.bytes().data(), old.bytes().size()) + "|", 0) == 0,
+            "older ledger: its bytes are the journal's starting record");
+      std::vector<uint8_t> bad(100, 7);
+      neml::Config c4 = cfg_in("journal-garbage");
+      fs::create_directories(c4.dir);
+      put(neml::ring_path(c4), bad);
+      check(!neml::load_ring(c4, p, &e) && add(c4, 0, &e) == 0 && bytes_of(neml::ring_path(c4)) == bad && !fs::exists(neml::ring_journal_path(c4)),
+            "unreadable ledger: refused, never reset to empty");
+    }
+
+    // chat notes: journaled the same way; a damaged notes file is refused, not reset
+    {
+      neml::Config cc = cfg_in("journal-chat");
+      cc.chat_writeback = true;
+      std::string err;
+      bool ok = true;
+      for (int i = 0; i < 18; ++i) ok = ok && neml::chat_writeback(cc, "note " + std::to_string(i), err);
+      std::vector<std::string> notes;
+      check(ok && neml::load_chat_notes(cc, notes, &err) && notes.size() == 16 && notes.front() == "note 2" && notes.back() == "note 17",
+            "chat notes: 18 notes, newest 16 kept, journaled");
+      auto b = bytes_of(neml::chat_path(cc));
+      b[20] ^= 1;
+      put(neml::chat_path(cc), b);
+      check(!neml::load_chat_notes(cc, notes, &err) && !neml::chat_writeback(cc, "more", err) && bytes_of(neml::chat_path(cc)) == b,
+            "chat notes: an edited notes file is refused and never reset");
+      neml::Config cl = cfg_in("journal-chat-legacy");
+      cl.chat_writeback = true;
+      fs::create_directories(cl.dir);
+      put(neml::chat_path(cl), std::vector<uint8_t>(50, 1));
+      check(!neml::chat_writeback(cl, "x", err) && bytes_of(neml::chat_path(cl)) == std::vector<uint8_t>(50, 1),
+            "chat notes: an unreadable older notes file is refused, not overwritten");
+    }
+
+    // pinned records: --verify --expect style anchoring through the loaded line hashes
+    check(neml::load_ring(c, r, &e, &ld) && ld.line_sha.size() == 21 && ld.line_sha[20] == ld.head, "journal: every record's hash is available for pinning");
+    { std::error_code ec; fs::remove_all(fs::path(c.dir).parent_path() / "journal-pending", ec); }
+  }
+
+  // ---- 64-bit counter: the lifetime count carries past 2^32 ----
+  {
+    neml::Ring ring;
+    ring.set_total((uint64_t(1) << 32) - 2);
+    for (int i = 0; i < 4; ++i) ring.append(mk(i, false, 1));
+    neml::Ring back;
+    check(ring.total() == (uint64_t(1) << 32) + 2 && ring.ordered().size() == 16 && back.parse(ring.bytes()) && back.total() == ring.total() &&
+              ring.ordered().back().run_id == 2u,
+          "counter: the lifetime count is 64-bit and survives a save");
+  }
+
+  // ---- save lock: an OS lock on the save file; a live holder is never taken over ----
   {
     neml::Config c = cfg_in("lock");
     fs::create_directories(c.dir);
-    const fs::path ld = fs::path(c.dir) / "nemo_episodic.lock.d";
-    auto put_owner = [&](const std::string& tok) { fs::create_directories(ld); std::ofstream(ld / "owner", std::ios::binary) << tok; };
-    auto owner = [&]() { std::ifstream f(ld / "owner", std::ios::binary); std::string t; std::getline(f, t); return t; };
-    put_owner("stale-owner");
+    {
+      std::optional<neml::SaveLock> a;
+      a.emplace(c.dir);
+      neml::SaveLock b(c.dir, "nemo_episodic.lock", 4);
+      check(a->held() && !b.held(), "lock: a second lock waits and gives up while the first is held (no takeover)");
+      { std::ofstream(neml::ring_path(c), std::ios::binary) << "x"; }
+      std::string e;
+      neml::Recorder rr;
+      // a writer that would wait 10 s: use a thread so the test can release the first lock after a short while
+      std::atomic<uint32_t> got{7};
+      std::thread th([&] { neml::Config cw = c; got = neml::write_receipt(cw, rr, 1, false, "w", neml::ReceiptInfo{}, &e); });
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      check(got == 7, "lock: a writer waits while the lock is held");
+      fs::remove(neml::ring_path(c));
+      a.reset();
+      th.join();
+      check(got == 1, "lock: the waiting writer saves once the holder lets go");
+    }
+    {
+      neml::SaveLock a(c.dir);
+      const auto t0 = std::chrono::steady_clock::now();
+      const neml::Snapshot busy = neml::Snapshot::take(c);
+      const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      check(busy.busy && !busy.ok && busy.runs.empty() && secs > 5.0, "lock: take() waits, then reports busy; it never steals a live lock");
+    }
+    // threads in one process, no mutex: every save lands, in order, and the chain checks
+    {
+      neml::Config ct = cfg_in("lock-threads");
+      std::vector<std::thread> ths;
+      std::vector<int> ok(6, 0);
+      for (int t = 0; t < 6; ++t)
+        ths.emplace_back([&, t] {
+          for (int i = 0; i < 10; ++i) { neml::Recorder rr; ok[size_t(t)] += neml::write_receipt(ct, rr, i, false, "t", neml::ReceiptInfo{}) != 0; }
+        });
+      for (auto& th : ths) th.join();
+      int sum = 0;
+      for (int v : ok) sum += v;
+      neml::Ring r;
+      neml::Loaded ld;
+      std::string e;
+      check(sum == 60 && neml::load_ring(ct, r, &e, &ld) && r.total() == 60 && ld.records == 61, "threads: 6 x 10 saves, all chained, none lost");
+    }
+#ifndef _WIN32
+    // separate processes
+    {
+      neml::Config cp = cfg_in("lock-procs");
+      fs::create_directories(cp.dir);
+      std::vector<pid_t> kids;
+      for (int k = 0; k < 4; ++k) {
+        const pid_t pid = fork();
+        if (pid == 0) {
+          int n = 0;
+          for (int i = 0; i < 10; ++i) { neml::Recorder rr; n += neml::write_receipt(cp, rr, i, false, "p", neml::ReceiptInfo{}) != 0; }
+          _exit(n == 10 ? 0 : 1);
+        }
+        kids.push_back(pid);
+      }
+      bool kids_ok = true;
+      for (pid_t p : kids) { int st = 0; kids_ok = kids_ok && waitpid(p, &st, 0) == p && WIFEXITED(st) && WEXITSTATUS(st) == 0; }
+      neml::Ring r;
+      neml::Loaded ld;
+      std::string e;
+      check(kids_ok && neml::load_ring(cp, r, &e, &ld) && r.total() == 40 && ld.records == 41, "processes: 4 x 10 saves, all chained, none lost");
+    }
+#endif
     std::error_code ec;
-    fs::last_write_time(ld, fs::file_time_type::clock::now() - std::chrono::minutes(5), ec);
-    bool took = false, replaced = false;
-    { neml::WriteLock lk(c.dir); took = lk.held(); replaced = owner() != "stale-owner" && !owner().empty(); }
-    check(!ec && took && replaced && !fs::exists(ld), "lock: a stale lock is taken over and released with a new owner token");
-    put_owner("fresh-owner");
-    { std::ofstream(neml::ring_path(c), std::ios::binary) << "x"; }
-    const neml::Snapshot busy = neml::Snapshot::take(c);
-    check(busy.busy && !busy.ok && busy.runs.empty() && owner() == "fresh-owner", "lock: a fresh foreign lock is never stolen, and take() reports busy");
-    fs::remove_all(ld, ec);
-    { neml::WriteLock lk(c.dir); if (lk.held()) { fs::remove_all(ld, ec); put_owner("someone-else"); } }
-    check(owner() == "someone-else", "lock: a holder never deletes a lock that now carries another owner token");
     fs::remove_all(fs::path(c.dir), ec);
   }
   std::printf("[NEML] %s (%d failures)\n", g_fail ? "FAIL" : "PASS", g_fail);

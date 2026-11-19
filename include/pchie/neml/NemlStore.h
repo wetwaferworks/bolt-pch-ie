@@ -10,17 +10,17 @@
 //   (Windows: %LOCALAPPDATA%\BoltPCHIE\neml; elsewhere: $XDG_DATA_HOME/bolt-pchie/neml or ~/.local/share/bolt-pchie/neml).
 // The ledger is never written inside the repository.
 #pragma once
-#include "pchie/OsRandom.h"
+#include "pchie/neml/NemlJournal.h"
 #include "pchie/neml/NemlLedger.h"
+#include <algorithm>
+#include <cstddef>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace pchie {
@@ -101,8 +101,10 @@ inline bool apply_cli(int argc, char** argv) {
 }
 
 inline std::string ring_path(const Config& c) { return (std::filesystem::path(resolved_dir(c)) / "nemo_episodic.bin").string(); }
+inline std::string ring_journal_path(const Config& c) { return (std::filesystem::path(resolved_dir(c)) / "nemo_episodic.journal").string(); }
 inline std::string priors_path(const Config& c) { return (std::filesystem::path(resolved_dir(c)) / "nemo_priors.txt").string(); }
 inline std::string chat_path(const Config& c) { return (std::filesystem::path(resolved_dir(c)) / "nemo_chat_notes.bin").string(); }
+inline std::string chat_journal_path(const Config& c) { return (std::filesystem::path(resolved_dir(c)) / "nemo_chat_notes.journal").string(); }
 
 inline std::vector<uint8_t> read_file(const std::string& p) {
   std::ifstream f(p, std::ios::binary);
@@ -110,101 +112,49 @@ inline std::vector<uint8_t> read_file(const std::string& p) {
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-inline bool write_file_atomic(const std::string& p, const std::vector<uint8_t>& b) {
-  const std::string tmp = p + ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    if (!f) return false;
-    f.write(reinterpret_cast<const char*>(b.data()), std::streamsize(b.size()));
-    if (!f) return false;
-  }
-  std::error_code ec;
-  std::filesystem::rename(tmp, p, ec);
-  if (ec) { std::filesystem::remove(p, ec); ec.clear(); std::filesystem::rename(tmp, p, ec); }
-  return !ec;
-}
-
-// Serializes ledger writers: one mutex in the process, and a lock directory across processes. The directory
-// holds an owner token. A lock older than 60 s is taken over by renaming it aside (only one process can win
-// that rename) and checking the token it carried is the one judged stale; a fresh lock that slipped in is put
-// back. A holder only removes the lock if it still carries its own token.
-class WriteLock {
- public:
-  explicit WriteLock(const std::string& dir) : lk_(mu()) {
-    namespace fs = std::filesystem;
-    path_ = (fs::path(dir) / "nemo_episodic.lock").string();
-    token_ = make_token();
-    const std::string d = path_ + ".d";
-    for (int i = 0; i < 400 && !held_; ++i) {
-      std::error_code ec;
-      if (fs::create_directory(d, ec)) {
-        if (write_token(d, token_)) { held_ = true; break; }
-        fs::remove_all(d, ec);
-        continue;
-      }
-      const auto t = fs::last_write_time(d, ec);
-      if (!ec && fs::file_time_type::clock::now() - t > std::chrono::seconds(60)) {
-        const std::string seen = read_token(d);
-        const std::string aside = d + ".stale." + token_;
-        std::error_code rec;
-        fs::rename(d, aside, rec);
-        if (!rec) {
-          const auto ta = fs::last_write_time(aside, rec);
-          const bool still_stale = !rec && fs::file_time_type::clock::now() - ta > std::chrono::seconds(60);
-          if (read_token(aside) == seen && still_stale) fs::remove_all(aside, rec);
-          else { std::error_code bec; fs::rename(aside, d, bec); if (bec) fs::remove_all(aside, bec); }
-        }
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    }
-  }
-  ~WriteLock() {
-    if (!held_) return;
-    namespace fs = std::filesystem;
-    const std::string d = path_ + ".d", aside = d + ".release." + token_;
-    std::error_code ec;
-    if (read_token(d) != token_) return;  // taken over while we held it; never delete someone else's lock
-    fs::rename(d, aside, ec);
-    if (ec) return;
-    if (read_token(aside) == token_) fs::remove_all(aside, ec);
-    else { std::error_code bec; fs::rename(aside, d, bec); }
-  }
-  WriteLock(const WriteLock&) = delete;
-  WriteLock& operator=(const WriteLock&) = delete;
-  bool held() const { return held_; }
- private:
-  static std::mutex& mu() { static std::mutex m; return m; }
-  static std::string make_token() {
-    uint8_t r[16] = {};
-    if (!pchie::os_random_bytes(r, sizeof r)) {
-      const uint64_t t = uint64_t(std::chrono::steady_clock::now().time_since_epoch().count());
-      std::memcpy(r, &t, sizeof t);
-    }
-    static const char* hx = "0123456789abcdef";
-    std::string s;
-    for (uint8_t b : r) { s += hx[b >> 4]; s += hx[b & 15]; }
-    return s;
-  }
-  static bool write_token(const std::string& d, const std::string& tok) {
-    std::ofstream f(std::filesystem::path(d) / "owner", std::ios::binary | std::ios::trunc);
-    f << tok;
-    return bool(f);
-  }
-  static std::string read_token(const std::string& d) {
-    std::ifstream f(std::filesystem::path(d) / "owner", std::ios::binary);
-    std::string s;
-    if (f) std::getline(f, s);
-    return s.size() > 64 ? std::string() : s;
-  }
-  std::unique_lock<std::mutex> lk_;
-  std::string path_, token_;
-  bool held_ = false;
-};
-
-inline bool load_ring(const Config& c, Ring& r, std::string* err = nullptr) {
-  if (!r.parse(read_file(ring_path(c)))) { if (err) *err = "unreadable ledger " + ring_path(c); return false; }
+// ---- The receipt ring and its journal. ----
+// A receipt record's payload is the 256-byte receipt as stored, run_id included; it must be the next run.
+inline bool ring_apply(char kind, const std::vector<uint8_t>& payload, std::vector<uint8_t>& state, std::string& why) {
+  if (kind != 'R') { why = "not a receipt record"; return false; }
+  if (payload.size() != sizeof(MazeRunReceipt)) { why = "a receipt record must hold 256 bytes"; return false; }
+  Ring ring;
+  if (!ring.parse(state)) { why = "the ring before this record is unreadable"; return false; }
+  MazeRunReceipt r;
+  std::memcpy(&r, payload.data(), sizeof r);
+  if (r.run_id != uint32_t(ring.total() + 1)) { why = "the receipt is not the next run"; return false; }
+  ring.append(r);
+  ring.h.flags |= kRingJournaled;
+  state = ring.bytes();
   return true;
 }
+inline SaveFile ring_save(const Config& c) {
+  SaveFile sf;
+  sf.file = ring_path(c);
+  sf.journal = ring_journal_path(c);
+  sf.apply = ring_apply;
+  sf.valid = [](const std::vector<uint8_t>& b) { Ring r; return r.parse(b); };
+  sf.journaled = [](const std::vector<uint8_t>& b) {
+    return b.size() == kRingBytes && std::memcmp(b.data(), "NEML0002", 8) == 0 && (b[offsetof(RingHeader, flags)] & kRingJournaled);
+  };
+  return sf;
+}
+
+// Loads the ring and checks it against its journal (see load_checked). On refusal r is left empty and err says
+// why; nothing on disk is changed. ld (optional) receives what a save needs.
+inline bool load_ring(const Config& c, Ring& r, std::string* err = nullptr, Loaded* ld = nullptr) {
+  Loaded tmp;
+  Loaded& L = ld ? *ld : tmp;
+  std::string why;
+  r.clear();
+  if (!load_checked(ring_save(c), L, why) || !r.parse(L.state)) {
+    r.clear();
+    if (err) *err = why.empty() ? "unreadable ledger " + ring_path(c) : why;
+    return false;
+  }
+  return true;
+}
+
+inline const char* busy_text() { return "ledger busy: another PCHIE process is saving to it (waited 10 s)"; }
 
 struct ReceiptInfo {
   uint64_t maze_key = 0;
@@ -214,73 +164,133 @@ struct ReceiptInfo {
   uint8_t flags = 0;
 };
 
-// Appends one receipt and rewrites the priors file. Returns the run id, or 0 when recording is off or the
-// ledger could not be written (err says which). Never touches a chain, an action, or a hash of the run.
+// Appends one receipt (journal first, then the ring) and rewrites the priors file. Returns the run id, or 0 when
+// recording is off or the ledger was refused or could not be written (err says which). A ledger that fails its
+// checks is left exactly as it was. Never touches a chain, an action, or a hash of the run.
 inline uint32_t write_receipt(const Config& c, const Recorder& rec, int total_steps, bool exit_reached,
                               const std::string& note, const ReceiptInfo& info, std::string* err = nullptr) {
   if (!c.record) { if (err) *err = "recording off"; return 0; }
   const std::string dir = resolved_dir(c);
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
-  WriteLock lock(dir);
-  if (!lock.held()) { if (err) *err = "ledger busy"; return 0; }
+  SaveLock lock(dir);
+  if (!lock.held()) { if (err) *err = busy_text(); return 0; }
   Ring ring;
-  if (!load_ring(c, ring, err)) return 0;
+  Loaded ld;
+  if (!load_ring(c, ring, err, &ld)) return 0;
   MazeRunReceipt r = rec.finish(uint32_t(std::time(nullptr)), total_steps, exit_reached, note);
   r.maze_key = info.maze_key; r.maze_seed = info.maze_seed;
   r.maze_w = uint8_t(std::clamp(info.maze_w, 0, 255)); r.maze_h = uint8_t(std::clamp(info.maze_h, 0, 255));
   r.path_kind = info.path_kind; r.flags = info.flags;
-  const uint32_t id = ring.append(r);
-  if (!write_file_atomic(ring_path(c), ring.bytes())) { if (err) *err = "ledger write failed"; return 0; }
-  const std::string pt = priors_text(priors(ring.ordered()));
+  r.run_id = uint32_t(ring.total() + 1);
+  std::vector<uint8_t> payload(sizeof r), next;
+  std::memcpy(payload.data(), &r, sizeof r);
+  std::string why;
+  if (!save_checked(ring_save(c), ld, 'R', payload, next, why)) { if (err) *err = "ledger write failed: " + why; return 0; }
+  Ring after;
+  (void)after.parse(next);
+  const std::string pt = priors_text(priors(after.ordered()));
   (void)write_file_atomic(priors_path(c), std::vector<uint8_t>(pt.begin(), pt.end()));
-  return id;
+  return r.run_id;
 }
 
 // ---- Chat write-back hook: 64-byte notes Nemo writes after a chat. OFF by default (not approved). ----
+// nemo_chat_notes.bin: "NEMLCHT1", the note count (low 32 bits at 8, high 16 bits at 12), flags at 14, then 16
+// slots of 64 bytes. Journaled like the ring, in nemo_chat_notes.journal (record kind C, payload = the note).
 static constexpr size_t kChatNoteBytes = 64;
-inline std::vector<std::string> load_chat_notes(const Config& c) {
-  std::vector<std::string> out;
-  const auto b = read_file(chat_path(c));
-  if (b.size() != 16 + kCap * kChatNoteBytes || std::memcmp(b.data(), "NEMLCHT1", 8) != 0) return out;
-  uint32_t total = 0; std::memcpy(&total, b.data() + 8, 4);
-  const uint32_t n = std::min(total, kCap);
-  for (uint32_t i = 0; i < n; ++i) {
-    const size_t slot = (total - n + i) % kCap;
+static constexpr size_t kChatBytes = 16 + kCap * kChatNoteBytes;
+inline uint64_t chat_total(const std::vector<uint8_t>& b) {
+  uint32_t lo = 0; uint16_t hi = 0;
+  std::memcpy(&lo, b.data() + 8, 4); std::memcpy(&hi, b.data() + 12, 2);
+  return (uint64_t(hi) << 32) | lo;
+}
+inline bool chat_valid(const std::vector<uint8_t>& b) {
+  return b.empty() || (b.size() == kChatBytes && std::memcmp(b.data(), "NEMLCHT1", 8) == 0);
+}
+inline bool chat_apply(char kind, const std::vector<uint8_t>& payload, std::vector<uint8_t>& state, std::string& why) {
+  if (kind != 'C') { why = "not a chat note record"; return false; }
+  if (payload.size() != kChatNoteBytes || payload.back() != 0) { why = "a chat note record must hold 64 bytes ending in 0"; return false; }
+  if (!chat_valid(state)) { why = "the chat notes before this record are unreadable"; return false; }
+  if (state.empty()) { state.assign(kChatBytes, 0); std::memcpy(state.data(), "NEMLCHT1", 8); }
+  const uint64_t total = chat_total(state);
+  if (total >= (uint64_t(1) << 48) - 1) { why = "the chat note count is full"; return false; }
+  std::memcpy(state.data() + 16 + size_t(total % kCap) * kChatNoteBytes, payload.data(), kChatNoteBytes);
+  const uint64_t t = total + 1;
+  const uint32_t lo = uint32_t(t); const uint16_t hi = uint16_t(t >> 32);
+  std::memcpy(state.data() + 8, &lo, 4); std::memcpy(state.data() + 12, &hi, 2);
+  state[14] |= kRingJournaled;
+  return true;
+}
+inline SaveFile chat_save(const Config& c) {
+  SaveFile sf;
+  sf.file = chat_path(c);
+  sf.journal = chat_journal_path(c);
+  sf.apply = chat_apply;
+  sf.valid = chat_valid;
+  sf.journaled = [](const std::vector<uint8_t>& b) { return b.size() == kChatBytes && (b[14] & kRingJournaled); };
+  return sf;
+}
+// The chat notes, oldest first. Refuses (false, err) a notes file that fails its checks; never resets it.
+inline bool load_chat_notes(const Config& c, std::vector<std::string>& out, std::string* err = nullptr) {
+  out.clear();
+  Loaded ld;
+  std::string why;
+  if (!load_checked(chat_save(c), ld, why)) { if (err) *err = why; return false; }
+  const auto& b = ld.state;
+  if (b.empty()) return true;
+  const uint64_t total = chat_total(b), n = std::min<uint64_t>(total, kCap);
+  for (uint64_t i = 0; i < n; ++i) {
+    const size_t slot = size_t((total - n + i) % kCap);
     out.push_back(get_str(reinterpret_cast<const char*>(b.data() + 16 + slot * kChatNoteBytes), kChatNoteBytes));
   }
-  return out;
+  return true;
 }
 inline bool chat_writeback(const Config& c, const std::string& note, std::string& err) {
   if (!c.chat_writeback) { err = "chat write-back is off"; return false; }
   const std::string dir = resolved_dir(c);
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
-  WriteLock lock(dir);
-  if (!lock.held()) { err = "ledger busy"; return false; }
-  auto b = read_file(chat_path(c));
-  if (b.size() != 16 + kCap * kChatNoteBytes || std::memcmp(b.data(), "NEMLCHT1", 8) != 0) {
-    b.assign(16 + kCap * kChatNoteBytes, 0);
-    std::memcpy(b.data(), "NEMLCHT1", 8);
-  }
-  uint32_t total = 0; std::memcpy(&total, b.data() + 8, 4);
-  put_str(reinterpret_cast<char*>(b.data() + 16 + (total % kCap) * kChatNoteBytes), kChatNoteBytes, note);
-  ++total; std::memcpy(b.data() + 8, &total, 4);
-  if (!write_file_atomic(chat_path(c), b)) { err = "chat note write failed"; return false; }
+  SaveLock lock(dir, "nemo_chat_notes.lock");
+  if (!lock.held()) { err = busy_text(); return false; }
+  Loaded ld;
+  if (!load_checked(chat_save(c), ld, err)) return false;
+  std::vector<uint8_t> payload(kChatNoteBytes), next;
+  put_str(reinterpret_cast<char*>(payload.data()), kChatNoteBytes, note);
+  std::string why;
+  if (!save_checked(chat_save(c), ld, 'C', payload, next, why)) { err = "chat note write failed: " + why; return false; }
   return true;
 }
 
 // ---- Memory block for the chat interface. ----
 // The chat UI calls this to get the prefix it puts before the conversation. ntok must be the real tokenizer of
-// the model in use (the cap is in its tokens). Reads only; returns the block and, in *tokens, its size.
-inline std::string memory_block(const Config& c, const TokenCount& ntok, size_t max_tokens = 384, size_t* tokens = nullptr) {
+// the model in use (the cap is in its tokens). Reads only; returns the block and, in *tokens, its size. When the
+// ledger or the chat notes fail their checks (or the ledger stays busy) it returns an empty string and says why
+// in *err: a damaged memory is refused, never shown as an empty one.
+inline std::string memory_block(const Config& c, const TokenCount& ntok, size_t max_tokens = 384, size_t* tokens = nullptr,
+                                std::string* err = nullptr) {
+  if (tokens) *tokens = 0;
+  if (err) err->clear();
+  const std::string dir = resolved_dir(c);
   Ring ring;
-  std::string err;
-  if (!load_ring(c, ring, &err)) ring.clear();
-  return digest(ring.ordered(), ring.h.total_written, ntok, max_tokens, tokens, load_chat_notes(c));
+  std::vector<std::string> notes;
+  std::string why;
+  {
+    std::error_code ec;
+    if (std::filesystem::exists(ring_path(c), ec) || std::filesystem::exists(ring_journal_path(c), ec)) {
+      SaveLock lock(dir);
+      if (!lock.held()) { if (err) *err = busy_text(); return std::string(); }
+      if (!load_ring(c, ring, &why)) { if (err) *err = why; return std::string(); }
+    }
+    if (std::filesystem::exists(chat_path(c), ec) || std::filesystem::exists(chat_journal_path(c), ec)) {
+      SaveLock lock(dir, "nemo_chat_notes.lock");
+      if (!lock.held()) { if (err) *err = busy_text(); return std::string(); }
+      if (!load_chat_notes(c, notes, &why)) { if (err) *err = why; return std::string(); }
+    }
+  }
+  return digest(ring.ordered(), ring.total(), ntok, max_tokens, tokens, notes);
 }
-inline std::string memory_block(const TokenCount& ntok, size_t max_tokens = 384, size_t* tokens = nullptr) {
-  return memory_block(process_config(), ntok, max_tokens, tokens);
+inline std::string memory_block(const TokenCount& ntok, size_t max_tokens = 384, size_t* tokens = nullptr, std::string* err = nullptr) {
+  return memory_block(process_config(), ntok, max_tokens, tokens, err);
 }
 
 }  // namespace neml

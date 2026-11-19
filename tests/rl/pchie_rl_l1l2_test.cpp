@@ -854,6 +854,7 @@ static int maze_run(int argc, char** argv) {
     // Episodic memory prior (on by default for these scratch runs; --neml-reason off disables; empty ledger = unused).
     if (!neml::apply_cli(argc, argv)) { std::printf("[RLON] --neml takes on, off or a folder; --neml-reason takes on or off\n"); return 3; }
     const neml::Snapshot snap = neml::process_config().memory_prior ? neml::Snapshot::take(neml::process_config()) : neml::Snapshot::empty();
+    if (!snap.ok) { std::printf("[RLON] the NEML ledger was refused: %s (--neml-reason off runs without it)\n", snap.why.c_str()); return 3; }
     if (!snap.runs.empty()) mz.set_memory(&snap);
     std::printf("[RLON] memory prior %s (snapshot runs=%zu sha256=%s)\n", snap.runs.empty() ? "unused" : "ON", snap.runs.size(),
                 hexv(snap.sha256).c_str());

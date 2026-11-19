@@ -645,7 +645,12 @@ int main(int argc, char** argv) {
         model.dispatcher_size(), a.model.c_str(), hex(model.weights_sha256()).substr(0, 16).c_str());
     if (neml::process_config().record || a.neml_inject) {
       size_t nt = 0;
-      const std::string dg = neml::memory_block([&](const std::string& x) { return model.tokenize_no_bos(x).size(); }, 384, &nt);
+      std::string nerr;
+      const std::string dg = neml::memory_block([&](const std::string& x) { return model.tokenize_no_bos(x).size(); }, 384, &nt, &nerr);
+      if (!nerr.empty()) {
+        say("NEML: the memory ledger was refused: %s", nerr.c_str());
+        if (a.neml_inject) { say("FAIL NEML: --neml-inject needs a ledger that passes its checks"); return false; }
+      }
       say("NEML: memory block %zu tokens (cap 384, real tokenizer); recording=%d inject=%d", nt, int(neml::process_config().record), int(a.neml_inject));
       if (a.neml_inject) brain.neml_prefix = dg;
     }
