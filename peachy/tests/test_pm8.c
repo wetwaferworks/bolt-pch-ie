@@ -57,6 +57,8 @@ int main(int argc, char** argv) {
     find_args(&d, &a);
     snprintf(what, sizeof(what), "%s profile serves PMCP with a token file in record mode", profiles[i]);
     CHECK(a >= 0 && arr_has(&d, a, "serve") && arr_has(&d, a, "--token-file") && arr_after(&d, a, "--mode", "record"), what);
+    snprintf(what, sizeof(what), "%s profile loads code only from the protected install folder", profiles[i]);
+    CHECK(a >= 0 && arr_has(&d, a, "--install") && !arr_has(&d, a, "--lib"), what);
     snprintf(what, sizeof(what), "%s profile holds no secret", profiles[i]);
     CHECK(text && !strstr(text, "\"token\"") && !strstr(text, "authorization") && !strstr(text, "Bearer") &&
               !strstr(text, "token_sha256") && !strstr(text, "actuate"),

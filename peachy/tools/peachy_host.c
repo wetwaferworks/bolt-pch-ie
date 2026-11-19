@@ -1,11 +1,20 @@
 /* peachy_host: a small console host for Peachy (PMCP). MIT license.
  *
- *   peachy_host serve --lib <peachy library> --allowlist <file> --audit-dir <dir> --client <name>
+ *   peachy_host serve --install <folder> [--lib <peachy library>] --allowlist <file> --audit-dir <dir> --client <name>
  *                     --token-file <file> [--session <name>] [--mode record|advisory]
  *                     [--planner none|pchie|mjolnir] [--pchie <library>] [--mjolnir <library>]
  *                     [--game-exe <program> [--game-arg <arg>]... [--game-workdir <dir>] [--game-stderr <file>]]
  *       Serves PMCP over stdio: one JSON-RPC message per line on stdin, replies on stdout. The token is read from
- *       the file, compared by SHA-256 inside the library, and never printed.
+ *       the file, compared by SHA-256 inside the library, and never printed. Every library and program it loads or
+ *       starts (--lib, default the Peachy library in the install folder; --pchie; --mjolnir; --game-exe) must sit in
+ *       the install folder and match its manifest, checked before anything is loaded (see src/pj_install.h).
+ *   peachy_host install --to <folder> --file <path> [--file <path>]...
+ *       Copies the files into a new install folder, writes its SHA-256 manifest and locks the folder down (owned by
+ *       Administrators or root, read and run only for this account). Runs only elevated or as root. On Windows the
+ *       folder belongs under Program Files, e.g. "C:\Program Files\BoltPCHIE\Peachy".
+ *   peachy_host verify-install --install <folder>
+ *       Says whether serve would accept the install folder: the guard on every file, nothing extra in it, and every
+ *       file's SHA-256 against the manifest.
  *   peachy_host token-new --out <file>
  *       Makes a random token in a new file (never overwrites) and prints only its SHA-256 for the allowlist.
  *   peachy_host allow-add --allowlist <file> --client <name> (--token-sha256 <hex> | --token-file <file>)
@@ -30,6 +39,7 @@
 #include "peachy/peachy.h"
 #include "pj_base.h"
 #include "pj_guard.h"
+#include "pj_install.h"
 #include "pj_internal.h"
 #include "pj_platform.h"
 #include "pj_sha256.h"
@@ -66,7 +76,7 @@ static const char* opt(int argc, char** argv, const char* name) {
 
 static int usage(void) {
   fprintf(stderr,
-          "usage: peachy_host serve|token-new|allow-add|grant|revoke|protect|check|show|version [options]\n"
+          "usage: peachy_host serve|install|verify-install|token-new|allow-add|grant|revoke|protect|check|show|version [options]\n"
           "       see the comment at the top of tools/peachy_host.c or peachy/README.md\n");
   return 2;
 }
@@ -148,6 +158,237 @@ static const peachy_api* load_api(const char* lib_path, void** lib) {
   return api;
 }
 
+/* ---------------------------------------------------------------- the install folder (pj_install.h) */
+
+#if defined(_WIN32)
+#define PJ_DEFAULT_LIB "peachy.dll"
+#else
+#define PJ_DEFAULT_LIB "libpeachy.so"
+#endif
+
+/* Every file in the install folder, held open after its check, and the checked paths serve may load. */
+typedef struct code_set {
+  pj_install_manifest m;
+  pj_held_file held[PJ_INSTALL_MAX_FILES];
+  uint32_t n_held;
+  char lib[1024], pchie[1024], mjolnir[1024], game[1024];
+} code_set;
+
+static void code_release(code_set* c) {
+  uint32_t i;
+  for (i = 0; i < c->n_held; ++i) pj_held_close(&c->held[i]);
+  c->n_held = 0;
+}
+
+/* Checks the whole install folder: the guard on the manifest and every file, nothing in the folder that the
+ * manifest does not name, and every file's SHA-256 through a handle that stays open. 0 on success. */
+static int check_install(const char* dir, code_set* c, int verbose) {
+  char p[1100], why[160];
+  uint32_t i;
+  if (snprintf(p, sizeof(p), "%s/%s", dir, PJ_INSTALL_MANIFEST) >= (int)sizeof(p)) return -1;
+  if (guard_file(p, PJ_GUARD_CODE, "the install manifest")) return -1;
+  if (pj_install_read_manifest(dir, &c->m, why, sizeof(why)) != 0 ||
+      pj_install_check_contents(dir, &c->m, why, sizeof(why)) != 0) {
+    fprintf(stderr, "peachy_host: the install folder refused: %s\n", why);
+    return -1;
+  }
+  for (i = 0; i < c->m.n; ++i) {
+    if (snprintf(p, sizeof(p), "%s/%s", dir, c->m.e[i].name) >= (int)sizeof(p)) return -1;
+    if (guard_file(p, PJ_GUARD_CODE, c->m.e[i].name)) return -1;
+    if (pj_install_open_verified(dir, p, &c->m, &c->held[c->n_held], why, sizeof(why)) != 0) {
+      fprintf(stderr, "peachy_host: %s refused: %s\n", c->m.e[i].name, why);
+      return -1;
+    }
+    ++c->n_held;
+    if (verbose) printf("ok  %s\n", c->m.e[i].name);
+  }
+  return 0;
+}
+
+/* Maps one path given on the command line to the checked file it names: it must resolve to a file directly in
+ * the install folder that matches the manifest. out gets the checked location. 0 on success. */
+static int resolve_code(const char* dir, code_set* c, const char* given, const char* what, char* out, size_t cap) {
+  pj_held_file h;
+  char why[160];
+  if (!given) {
+    out[0] = 0;
+    return 0;
+  }
+  if (pj_install_open_verified(dir, given, &c->m, &h, why, sizeof(why)) != 0) {
+    fprintf(stderr, "peachy_host: %s refused: %s\n", what, why);
+    return -1;
+  }
+  pj_copy_cstr(out, cap, h.path);
+  pj_held_close(&h); /* the folder-wide check above holds every file open already */
+  return 0;
+}
+
+/* Everything serve loads or starts is checked here, before the first library is loaded. */
+static int check_code(int argc, char** argv, code_set* c) {
+  const char* dir = opt(argc, argv, "--install");
+  char dflt[1100];
+  const char* lib = opt(argc, argv, "--lib");
+  memset(c, 0, sizeof(*c));
+  if (!dir) {
+#if defined(PEACHY_TEST_UNGUARDED)
+    /* the test build may still serve straight from the build tree */
+    pj_copy_cstr(c->lib, sizeof(c->lib), lib ? lib : "");
+    if (opt(argc, argv, "--pchie")) pj_copy_cstr(c->pchie, sizeof(c->pchie), opt(argc, argv, "--pchie"));
+    if (opt(argc, argv, "--mjolnir")) pj_copy_cstr(c->mjolnir, sizeof(c->mjolnir), opt(argc, argv, "--mjolnir"));
+    if (opt(argc, argv, "--game-exe")) pj_copy_cstr(c->game, sizeof(c->game), opt(argc, argv, "--game-exe"));
+    return 0;
+#else
+    fprintf(stderr, "peachy_host: serve loads code only from a protected install folder: pass --install <folder> "
+                    "(made by peachy_host install)\n");
+    return -1;
+#endif
+  }
+  if (check_install(dir, c, 0)) goto bad;
+  if (!lib) {
+    if (snprintf(dflt, sizeof(dflt), "%s/%s", dir, PJ_DEFAULT_LIB) >= (int)sizeof(dflt)) goto bad;
+    lib = dflt;
+  }
+  if (resolve_code(dir, c, lib, "the Peachy library", c->lib, sizeof(c->lib)) ||
+      resolve_code(dir, c, opt(argc, argv, "--pchie"), "the PCHIE library", c->pchie, sizeof(c->pchie)) ||
+      resolve_code(dir, c, opt(argc, argv, "--mjolnir"), "the Mjolnir library", c->mjolnir, sizeof(c->mjolnir)) ||
+      resolve_code(dir, c, opt(argc, argv, "--game-exe"), "the game program", c->game, sizeof(c->game)))
+    goto bad;
+  return 0;
+bad:
+  code_release(c);
+  return -1;
+}
+
+static int cmd_verify_install(int argc, char** argv) {
+  const char* dir = opt(argc, argv, "--install");
+  static code_set c;
+  if (!dir) return usage();
+  memset(&c, 0, sizeof(c));
+  if (check_install(dir, &c, 1)) {
+    code_release(&c);
+    printf("REFUSED (the reason is on stderr)\n");
+    return 1;
+  }
+  printf("OK %u files match the install manifest\n", c.m.n);
+  code_release(&c);
+  return 0;
+}
+
+/* Copies src to a new file dst (never overwrites). 0 on success. */
+static int copy_new(const char* src, const char* dst) {
+  FILE *in = pj_fopen(src, "rb"), *out = NULL;
+  static char buf[1 << 16];
+  size_t n;
+  int ok = 1;
+  if (!in) return -1;
+  out = pj_fopen(dst, "wbx");
+  if (!out) {
+    fclose(in);
+    return -1;
+  }
+  while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+    if (fwrite(buf, 1, n, out) != n) {
+      ok = 0;
+      break;
+    }
+  if (ferror(in)) ok = 0;
+  fclose(in);
+  if (fflush(out) != 0) ok = 0;
+  if (fclose(out) != 0) ok = 0;
+  return ok ? 0 : -1;
+}
+
+static const char* last_part(const char* p) {
+  const char* b = p;
+  for (; *p; ++p)
+    if (*p == '/' || *p == '\\') b = p + 1;
+  return b;
+}
+
+static int cmd_install(int argc, char** argv) {
+  const char* dir = opt(argc, argv, "--to");
+  static pj_install_manifest m;
+  static char text[PJ_INSTALL_MANIFEST_MAX + 1];
+  char p[1100];
+  size_t tn;
+  uint32_t i;
+  int k;
+  if (!dir) return usage();
+  if (need_elevated("install")) return 1;
+  memset(&m, 0, sizeof(m));
+  /* first every source: a good name, readable, hashed */
+  for (k = 2; k + 1 < argc; ++k) {
+    uint8_t sha[32];
+    uint64_t size = 0;
+    if (strcmp(argv[k], "--file")) continue;
+    ++k;
+    if (pj_install_hash_file(argv[k], sha, &size) != 0 || pj_install_add(&m, last_part(argv[k]), sha, size) != 0) {
+      fprintf(stderr, "peachy_host: install refused: %s cannot be read, has an unusual name, or is listed twice\n",
+              last_part(argv[k]));
+      return 1;
+    }
+  }
+  if (m.n == 0) return usage();
+  tn = pj_install_format(&m, text, sizeof(text));
+  if (tn == 0) return 1;
+  if (pj_dir_exists(dir)) {
+    fprintf(stderr, "peachy_host: install makes a new folder; %s already exists\n", dir);
+    return 1;
+  }
+#if defined(_WIN32)
+  wchar_t wdir[1100];
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir, -1, wdir, 1100) <= 0 || !CreateDirectoryW(wdir, NULL)) {
+#else
+  if (mkdir(dir, 0755) != 0) {
+#endif
+    fprintf(stderr, "peachy_host: cannot make the install folder\n");
+    return 1;
+  }
+  for (k = 2; k + 1 < argc; ++k) {
+    uint8_t sha[32];
+    uint64_t size = 0;
+    const pj_install_entry* e;
+    if (strcmp(argv[k], "--file")) continue;
+    ++k;
+    e = pj_install_find(&m, last_part(argv[k]));
+    if (!e || snprintf(p, sizeof(p), "%s/%s", dir, e->name) >= (int)sizeof(p) || copy_new(argv[k], p) != 0 ||
+        pj_install_hash_file(p, sha, &size) != 0 || size != e->size || memcmp(sha, e->sha256, 32) != 0) {
+      fprintf(stderr, "peachy_host: install failed copying %s; the folder is incomplete, remove it and try again\n",
+              last_part(argv[k]));
+      return 1;
+    }
+  }
+  if (snprintf(p, sizeof(p), "%s/%s", dir, PJ_INSTALL_MANIFEST) >= (int)sizeof(p)) return 1;
+  {
+    FILE* f = pj_fopen(p, "wbx");
+    int ok = f && fwrite(text, 1, tn, f) == tn;
+    if (f) ok = (fclose(f) == 0) && ok;
+    if (!ok) {
+      fprintf(stderr, "peachy_host: cannot write the install manifest\n");
+      return 1;
+    }
+  }
+#if !defined(PEACHY_TEST_UNGUARDED)
+  /* lock down: the folder first, then each file */
+  if (pj_protect_path(dir, PJ_GUARD_CODE, 1) != 0 || pj_protect_path(p, PJ_GUARD_CODE, 0) != 0) {
+    fprintf(stderr, "peachy_host: the install folder could not be locked down\n");
+    return 1;
+  }
+  for (i = 0; i < m.n; ++i) {
+    char f[1100];
+    if (snprintf(f, sizeof(f), "%s/%s", dir, m.e[i].name) >= (int)sizeof(f) || pj_protect_path(f, PJ_GUARD_CODE, 0) != 0) {
+      fprintf(stderr, "peachy_host: %s could not be locked down\n", m.e[i].name);
+      return 1;
+    }
+  }
+#else
+  (void)i;
+#endif
+  printf("installed %u files into %s; from a normal prompt, peachy_host verify-install --install <folder> "
+         "confirms serve accepts it\n", m.n, dir);
+  return 0;
+}
+
 /* Reads a token file into buf (trailing whitespace dropped). Returns length or -1. */
 static long read_token(const char* path, uint8_t* buf, size_t cap) {
   FILE* f = path ? pj_fopen(path, "rb") : NULL;
@@ -210,8 +451,9 @@ static int drain(const peachy_api* api, PeachySession* s, char* out, size_t cap)
 }
 
 static int cmd_serve(int argc, char** argv) {
-  void* lib;
-  const peachy_api* api = load_api(opt(argc, argv, "--lib"), &lib);
+  void* lib = NULL;
+  const peachy_api* api = NULL;
+  static code_set code;
   peachy_session_config c;
   PeachySession* s = NULL;
   char err[128];
@@ -227,12 +469,17 @@ static int cmd_serve(int argc, char** argv) {
   peachy_status st;
   int i;
   uint64_t quiet_since = 0;
+  /* Nothing is loaded until every check has passed: a library runs code the moment it loads, before any check
+   * inside it could. First this process and the files it trusts, then the code itself. */
   if (serve_not_elevated() || guard_file(opt(argc, argv, "--token-file"), PJ_GUARD_TOKEN, "the token file") ||
-      guard_file(opt(argc, argv, "--allowlist"), PJ_GUARD_ALLOWLIST, "the allowlist")) {
-    if (api) pj_dl_close(lib);
+      guard_file(opt(argc, argv, "--allowlist"), PJ_GUARD_ALLOWLIST, "the allowlist"))
     return 2;
+  if (check_code(argc, argv, &code)) return 2;
+  api = load_api(code.lib[0] ? code.lib : NULL, &lib);
+  if (!api) {
+    code_release(&code);
+    return 1;
   }
-  if (!api) return 1;
 #if defined(_WIN32)
   _setmode(_fileno(stdout), _O_BINARY);
 #endif
@@ -256,10 +503,10 @@ static int cmd_serve(int argc, char** argv) {
     fprintf(stderr, "peachy_host: --planner must be none, pchie or mjolnir\n");
     return 2;
   }
-  c.pchie_path = opt(argc, argv, "--pchie");
-  c.mjolnir_path = opt(argc, argv, "--mjolnir");
-  if (opt(argc, argv, "--game-exe")) {
-    game_argv[game_argc++] = opt(argc, argv, "--game-exe");
+  c.pchie_path = code.pchie[0] ? code.pchie : NULL;
+  c.mjolnir_path = code.mjolnir[0] ? code.mjolnir : NULL;
+  if (code.game[0]) {
+    game_argv[game_argc++] = code.game;
     for (i = 2; i + 1 < argc && game_argc < 33; ++i)
       if (!strcmp(argv[i], "--game-arg")) game_argv[game_argc++] = argv[++i];
     game_argv[game_argc] = NULL;
@@ -656,8 +903,10 @@ static int cmd_show(int argc, char** argv) {
 
 static int cmd_version(int argc, char** argv) {
   void* lib;
-  const peachy_api* api = load_api(opt(argc, argv, "--lib"), &lib);
+  const peachy_api* api;
   peachy_version_info vi;
+  if (serve_not_elevated()) return 2; /* it loads a library, so never elevated either */
+  api = load_api(opt(argc, argv, "--lib"), &lib);
   if (!api) return 1;
   memset(&vi, 0, sizeof(vi));
   vi.struct_size = sizeof(vi);
@@ -679,5 +928,7 @@ int main(int argc, char** argv) {
   if (!strcmp(argv[1], "check")) return cmd_check(argc, argv);
   if (!strcmp(argv[1], "show")) return cmd_show(argc, argv);
   if (!strcmp(argv[1], "version")) return cmd_version(argc, argv);
+  if (!strcmp(argv[1], "install")) return cmd_install(argc, argv);
+  if (!strcmp(argv[1], "verify-install")) return cmd_verify_install(argc, argv);
   return usage();
 }

@@ -121,8 +121,10 @@ markers through every field to check this.
 - The outside models run under the same account as the person and can run commands, so `peachy_host` leaves the
   "only the person can grant" rule to the operating system. `allow-add`, `grant`, `revoke` and `protect` run only
   elevated (root on POSIX). `serve` never runs elevated, and it refuses an allowlist its own account could change or
-  swap out through a folder above it, and a token file any other account could read. Setup and the limits of this
-  are in [`configs/README.md`](configs/README.md#protecting-the-files).
+  swap out through a folder above it, and a token file any other account could read. It loads code only from an
+  install folder made by `peachy_host install` (elevated), and checks every library and program in it against the
+  folder's SHA-256 manifest before loading anything. Setup and the limits of this are in
+  [`configs/README.md`](configs/README.md#protecting-the-files).
 
 ## Audit log
 

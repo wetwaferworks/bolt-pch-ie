@@ -2,11 +2,12 @@
 
 PMCP is the MCP interface Peachy serves. Every profile here starts the same small host program over stdio:
 
-    peachy_host serve --lib peachy.dll --allowlist allowlist.json --audit-dir audit --client <name> \
+    peachy_host serve --install "C:/Program Files/PMCP" --allowlist allowlist.json --audit-dir audit --client <name> \
                       --token-file tokens/<name>.token --mode record [planner and game options]
 
-Paths are placeholders under `C:/PMCP/`, except the allowlist, which lives in a protected folder under
-`C:/ProgramData/PMCP/` (see [Protecting the files](#protecting-the-files)). Change them to where the files really live. The game command line
+Paths are placeholders under `C:/PMCP/`, except the programs and libraries, which live in the protected install
+folder `C:/Program Files/PMCP`, and the allowlist, which lives in a protected folder under `C:/ProgramData/PMCP/`
+(see [Protecting the files](#protecting-the-files)). Change them to where the files really live. The game command line
 (`lithokraft_headless.exe --mcp-stdio`) is also a placeholder for however the headless game starts its MCP server.
 
 ## Setting up a client (done once, by the person at the console)
@@ -16,6 +17,12 @@ change, they can change too. That's why the grants live where only an administra
 that changes them runs from an elevated prompt ("Run as administrator"; `sudo` on Linux). `serve` itself runs from
 a normal prompt, and refuses to run elevated.
 
+0. Elevated, once per release: `peachy_host install --to "C:/Program Files/PMCP" --file peachy_host.exe --file peachy.dll --file pchie.dll --file mjolnir.dll --file lithokraft_headless.exe`
+   (the files you built or downloaded, plus any library they need that is not part of Windows). This makes a new
+   folder, copies the files in, writes `peachy-install.manifest` with each file's SHA-256 and size, and locks the
+   folder and every file down: owned by Administrators, full control for SYSTEM and Administrators, read and run
+   only for your account. For a new release, remove the old folder (elevated) and install again. From a normal
+   prompt, `peachy_host verify-install --install "C:/Program Files/PMCP"` should print `OK`.
 1. Elevated, once: `peachy_host protect --allowlist C:/ProgramData/PMCP/allowlist.json`
    This makes the folder if it's missing. The folder and the file become owned by Administrators, with full
    control for SYSTEM and Administrators, read-only for your account, and inheritance off. The folder must hold
@@ -40,6 +47,14 @@ Peachy would do; still nothing runs. Actuation is not available in this release.
 Before it starts, `serve` checks its files and refuses to start if any check fails:
 
 - **Elevation.** `serve` never runs elevated or as root, since such a process could change its own grants.
+- **The code it loads.** A library runs code the moment it is loaded, before any check inside it could run, so
+  `serve` checks every library and program before loading or starting any of them: the Peachy library, the PCHIE
+  and Mjolnir libraries and the game. All of them must sit directly in the install folder given with `--install`.
+  Neither the folder's manifest nor any file in it may be changeable by your account, directly or through a folder
+  above it, the folder may hold nothing the manifest does not name, and every file must match its SHA-256 and
+  size. Each file is opened once and hashed through that handle, and on Windows the handle refuses writers and
+  deletion while `serve` runs, so the bytes that were checked are the bytes that load. These checks come after the
+  elevation, allowlist and token checks and before anything is loaded.
 - **The allowlist** must be an ordinary file with no link or junction anywhere in its path. Your account must not
   be able to write it, delete it, re-permission it or take ownership of it. It also must not be able to delete,
   rename or re-permission any folder above it, or delete what's inside them. Put it in a folder of its own under
@@ -63,8 +78,8 @@ What this covers, and what it doesn't:
   already checks that a token is private to the account running it, so that remains possible later without code
   changes.)
 - A client with a shell can still run programs of its own, including a copy of Peachy built without these checks.
-  Keep `peachy_host.exe` and `peachy.dll` where your account can't replace them (for example
-  `C:/Program Files/PMCP`), so the server each profile starts is the real one. `actuate` stays refused everywhere.
+  The install folder keeps `peachy_host.exe` and everything it loads where your account can't replace them, so the
+  server each profile starts is the real one. `actuate` stays refused everywhere.
   Before it exists, the game will have to accept actions only from Peachy.
 
 ## Profiles

@@ -57,7 +57,27 @@ static void table(void) {
   f.known = 0;
   CHECK(verdict(&f, PJ_GUARD_ALLOWLIST, "could not be read") && verdict(&f, PJ_GUARD_TOKEN, "could not be read"),
         "facts that could not be read: refused, both kinds");
-  CHECK(verdict(&ok, 0, "unknown kind") && verdict(&ok, 3, "unknown kind"), "an unknown kind is refused");
+  CHECK(verdict(&ok, 0, "unknown kind") && verdict(&ok, 4, "unknown kind"), "an unknown kind is refused");
+  /* code serve loads (review 2026-11-19, H-1): no link, ordinary, and neither it nor a folder above changeable */
+  CHECK(verdict(&ok, PJ_GUARD_CODE, NULL), "protected code is accepted");
+  f = ok;
+  f.changeable = 1;
+  CHECK(verdict(&f, PJ_GUARD_CODE, "can change it"), "a library this account can change: refused");
+  f = ok;
+  f.path_changeable = 1;
+  CHECK(verdict(&f, PJ_GUARD_CODE, "folder above"), "a library that can be swapped through a folder: refused");
+  f = ok;
+  f.link_in_path = 1;
+  CHECK(verdict(&f, PJ_GUARD_CODE, "link"), "a library behind a link: refused");
+  f = ok;
+  f.regular = 0;
+  CHECK(verdict(&f, PJ_GUARD_CODE, "ordinary"), "a library that is not an ordinary file: refused");
+  f = ok;
+  f.known = 0;
+  CHECK(verdict(&f, PJ_GUARD_CODE, "could not be read"), "a library whose permissions cannot be read: refused");
+  f = ok;
+  f.elevated = 1;
+  CHECK(verdict(&f, PJ_GUARD_CODE, NULL), "the installer may check protected code while elevated");
   f = ok;
   f.link_in_path = 1;
   CHECK(verdict(&f, PJ_GUARD_ALLOWLIST, "link") && verdict(&f, PJ_GUARD_TOKEN, "link"), "a link in the path: refused");
@@ -93,6 +113,8 @@ static void real_files(void) {
   CHECK(f.changeable, "a scratch file is changeable by the account that made it");
   CHECK(verdict(&f, PJ_GUARD_ALLOWLIST, elevated ? "elevated" : "can change it"),
         "a scratch allowlist is refused: the outside models' account could rewrite it");
+  if (!elevated)
+    CHECK(verdict(&f, PJ_GUARD_CODE, "can change it"), "a library in a scratch folder is refused: it could be swapped");
   pj_file_facts_get(dir, &f);
   CHECK(f.known && !f.regular && verdict(&f, PJ_GUARD_TOKEN, "ordinary"), "a folder is not a token file");
   snprintf(bad, sizeof(bad), "%s/missing.json", dir);

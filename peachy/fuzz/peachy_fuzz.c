@@ -12,6 +12,7 @@
 
 #include "peachy/peachy.h"
 #include "pj_audit.h"
+#include "pj_install.h"
 #include "pj_internal.h"
 #include "pj_json.h"
 #include "pj_sha256.h"
@@ -192,6 +193,25 @@ static void target_propose(const uint8_t* data, size_t n) {
 }
 
 /* ---------------------------------------------------------------- allowlist */
+/* The install manifest (review 2026-11-19, H-1): anything accepted is canonical, writes back byte for byte, and
+ * names only plain file names in strictly ascending order. */
+static void target_install(const uint8_t* data, size_t n) {
+  pj_install_manifest m, m2;
+  static char buf[PJ_INSTALL_MANIFEST_MAX + 1];
+  size_t len;
+  uint32_t k;
+  if (pj_install_parse((const char*)data, n, &m) != 0) return;
+  len = pj_install_format(&m, buf, sizeof(buf));
+  if (len != n || memcmp(buf, data, n) != 0) die("accepted manifest is not canonical");
+  if (pj_install_parse(buf, len, &m2) != 0 || m2.n != m.n) die("written manifest does not read back");
+  for (k = 0; k < m.n; ++k) {
+    if (!pj_install_name_ok(m.e[k].name) || strchr(m.e[k].name, '/') || strchr(m.e[k].name, '\\'))
+      die("manifest accepted a bad name");
+    if (k && strcmp(m.e[k - 1].name, m.e[k].name) >= 0) die("manifest names out of order");
+    if (pj_install_find(&m, m.e[k].name) != &m.e[k]) die("manifest lookup");
+  }
+}
+
 static void target_allow(const uint8_t* data, size_t n) {
   pj_allow a, b;
   char why[96];
@@ -296,6 +316,11 @@ static const char* const k_allow_seeds[] = {
     "\"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\",\"tools\":[\"observe\",\"propose\"],"
     "\"rate_per_sec\":8,\"burst\":16,\"max_mode\":\"advisory\"},{\"name\":\"b\",\"transports\":[]}]}",
     "{\"version\":1,\"clients\":[]}", NULL};
+static const char* const k_install_seeds[] = {
+    "PJINSTALL1\n"
+    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff  10  game.exe\n"
+    "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100  1234567  peachy.dll\n",
+    NULL};
 static const char* const k_dict[] = {"{", "}", "[", "]", ",", ":", "\"", "\\", "\\u0000", "\\ud800", "\\udc00", "1e999",
                                      "-0", "0.0", "null", "true", "false", "\"jsonrpc\"", "\"2.0\"", "\"id\"", "\"method\"",
                                      "\"params\"", "\"tools/call\"", "\"name\"", "\"arguments\"", "\"propose\"",
@@ -441,6 +466,7 @@ int main(int argc, char** argv) {
   if (argc > 4) snprintf(g_dir, sizeof(g_dir), "%s", argv[4]);
   if (all || !strcmp(which, "json")) total += run_target("json", target_json, k_json_seeds, runs, 0);
   if (all || !strcmp(which, "allow")) total += run_target("allow", target_allow, k_allow_seeds, runs, 0);
+  if (all || !strcmp(which, "install")) total += run_target("install", target_install, k_install_seeds, runs, 0);
   if (all || !strcmp(which, "rpc")) total += run_target("rpc", target_rpc, k_json_seeds, all ? runs / 4 + 1 : runs, 0);
   if (all || !strcmp(which, "propose")) total += run_target("propose", target_propose, k_propose_seeds, all ? runs / 4 + 1 : runs, 0);
   if (all || !strcmp(which, "audit")) total += run_target("audit", target_audit, NULL, all ? runs / 20 + 1 : runs, 1);

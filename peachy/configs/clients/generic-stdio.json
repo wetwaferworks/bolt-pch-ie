@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "pmcp": {
-      "command": "C:/PMCP/peachy_host.exe",
+      "command": "C:/Program Files/PMCP/peachy_host.exe",
       "args": [
         "serve",
-        "--lib",
-        "C:/PMCP/peachy.dll",
+        "--install",
+        "C:/Program Files/PMCP",
         "--allowlist",
         "C:/ProgramData/PMCP/allowlist.json",
         "--audit-dir",
@@ -21,11 +21,11 @@
         "--planner",
         "mjolnir",
         "--mjolnir",
-        "C:/PMCP/mjolnir.dll",
+        "C:/Program Files/PMCP/mjolnir.dll",
         "--pchie",
-        "C:/PMCP/pchie.dll",
+        "C:/Program Files/PMCP/pchie.dll",
         "--game-exe",
-        "C:/PMCP/game/lithokraft_headless.exe",
+        "C:/Program Files/PMCP/lithokraft_headless.exe",
         "--game-arg",
         "--mcp-stdio",
         "--game-stderr",

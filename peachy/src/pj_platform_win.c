@@ -543,7 +543,7 @@ int pj_protect_path(const char* path, int kind, int is_dir) {
   ea[1].grfAccessPermissions = GENERIC_ALL;
   ea[1].Trustee.ptstrName = (LPWSTR)w.admins;
   ea[2].Trustee.ptstrName = (LPWSTR)w.user;
-  if (kind == PJ_GUARD_ALLOWLIST) {
+  if (kind == PJ_GUARD_ALLOWLIST || kind == PJ_GUARD_CODE) {
     ea[2].grfAccessPermissions = GENERIC_READ | GENERIC_EXECUTE;
     si |= OWNER_SECURITY_INFORMATION;
   } else if (kind == PJ_GUARD_TOKEN) {
@@ -552,7 +552,7 @@ int pj_protect_path(const char* path, int kind, int is_dir) {
     goto out;
   }
   if (SetEntriesInAclW(3, ea, NULL, &acl) != ERROR_SUCCESS) goto out;
-  if (SetNamedSecurityInfoW(wp, SE_FILE_OBJECT, si, kind == PJ_GUARD_ALLOWLIST ? (PSID)w.admins : NULL, NULL, acl,
+  if (SetNamedSecurityInfoW(wp, SE_FILE_OBJECT, si, kind != PJ_GUARD_TOKEN ? (PSID)w.admins : NULL, NULL, acl,
                             NULL) == ERROR_SUCCESS)
     rc = 0;
 out:

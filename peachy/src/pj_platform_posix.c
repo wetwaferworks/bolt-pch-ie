@@ -339,9 +339,9 @@ void pj_file_facts_get(const char* path, pj_file_facts* f) {
 int pj_protect_path(const char* path, int kind, int is_dir) {
   if (!path) return -1;
   if (kind == PJ_GUARD_TOKEN) return chmod(path, 0600) == 0 ? 0 : -1;
-  if (kind != PJ_GUARD_ALLOWLIST || geteuid() != 0) return -1;
+  if ((kind != PJ_GUARD_ALLOWLIST && kind != PJ_GUARD_CODE) || geteuid() != 0) return -1;
   if (chown(path, 0, 0) != 0) return -1;
-  return chmod(path, is_dir ? 0755 : 0644) == 0 ? 0 : -1;
+  return chmod(path, (is_dir || kind == PJ_GUARD_CODE) ? 0755 : 0644) == 0 ? 0 : -1;
 }
 #else
 typedef int pj_platform_posix_unused;

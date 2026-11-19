@@ -35,7 +35,7 @@ static int find_log(const char* dir, char* out, size_t cap) {
 }
 #endif
 
-static const char *g_host, *g_lib, *g_fake, *g_check, *g_guarded;
+static const char *g_host, *g_lib, *g_fake, *g_check, *g_guarded, *g_marker;
 static char g_dir[600];
 
 /* Runs a program to completion; collects stdout. */
@@ -132,6 +132,140 @@ static void guarded(const char* tok, const char* allow, const char* auditdir, co
   }
 }
 
+static const char* last_part(const char* p) {
+  const char* b = p;
+  for (; *p; ++p)
+    if (*p == '/' || *p == '\\') b = p + 1;
+  return b;
+}
+
+static int exists(const char* p) {
+  FILE* f = fopen(p, "rb");
+  if (f) fclose(f);
+  return f != NULL;
+}
+
+/* The install folder (review 2026-11-19, H-1): serve loads code only from a folder whose manifest it checked, and
+ * nothing is loaded before every check has passed. The marker library leaves a file behind the moment it loads. */
+static void install_flow(const char* tok, const char* allow, const char* auditdir, const char* errlog) {
+  char inst[800], marker_log[900], p[1000], fake_in[1000], lib_in[1000], marker_in[1000], out[4096];
+  int n;
+  snprintf(inst, sizeof(inst), "%s/inst", g_dir);
+  /* the marker library writes next to the test folder base (fixed at build time) */
+  snprintf(marker_log, sizeof(marker_log), "%s", pt_base);
+  {
+    size_t l = strlen(marker_log);
+    snprintf(marker_log + l, sizeof(marker_log) - l, "/marker-loaded.txt");
+  }
+  remove(marker_log);
+  snprintf(fake_in, sizeof(fake_in), "%s/%s", inst, last_part(g_fake));
+  snprintf(lib_in, sizeof(lib_in), "%s/%s", inst, last_part(g_lib));
+  snprintf(marker_in, sizeof(marker_in), "%s/%s", inst, last_part(g_marker));
+  {
+    const char* a[] = {g_host, "install", "--to", inst, "--file", g_lib, "--file", g_fake, "--file", g_marker};
+    run(a, 10, out, sizeof(out), errlog);
+    CHECK(strstr(out, "installed 3 files") != NULL, "install copies the files and writes the manifest");
+    n = run(a, 10, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "already exists"), "install never reuses an existing folder");
+  }
+  {
+    const char* v[] = {g_host, "verify-install", "--install", inst};
+    run(v, 4, out, sizeof(out), errlog);
+    CHECK(strstr(out, "OK 3 files") != NULL, "verify-install accepts what install wrote");
+  }
+  /* serve from the install folder, with the default library name */
+  {
+    const char* a[] = {g_host, "serve", "--install", inst, "--allowlist", allow, "--audit-dir", auditdir, "--client", "grok",
+                       "--token-file", tok, "--session", "insttest", "--game-exe", fake_in};
+    static char io[1 << 16];
+    size_t have = 0;
+    pj_proc pr;
+    memset(&pr, 0, sizeof(pr));
+    CHECK(pj_proc_spawn(&pr, a, 16, NULL, errlog) == 0, "serve --install starts");
+    CHECK(ask(&pr, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\"}}", io,
+              sizeof(io), &have) == 0,
+          "serve --install answers initialize");
+    pj_proc_stop(&pr, 10000);
+  }
+  /* a library from outside the folder, even with the same bytes */
+  {
+    const char* a[] = {g_host, "serve", "--install", inst, "--lib", g_lib, "--allowlist", allow, "--audit-dir", auditdir,
+                       "--client", "grok", "--token-file", tok};
+    n = run(a, 14, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "not directly inside") && !err_has(errlog, "PMCP serving"),
+          "serve refuses a library outside the install folder");
+  }
+  /* one changed byte in a planner library: refused, and it never loaded */
+  {
+    size_t len = 0;
+    char* b = pt_read_file(marker_in, &len);
+    const char* a[] = {g_host, "serve", "--install", inst, "--allowlist", allow, "--audit-dir", auditdir, "--client", "grok",
+                       "--token-file", tok, "--planner", "pchie", "--pchie", marker_in};
+    if (b && len > 100) {
+      b[len - 1] ^= 1;
+      pt_write_file(marker_in, b, len);
+    }
+    n = run(a, 16, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "does not match the install manifest") && !err_has(errlog, "PMCP serving"),
+          "serve refuses a tampered library");
+    CHECK(!exists(marker_log), "the tampered library was never loaded");
+    {
+      const char* v[] = {g_host, "verify-install", "--install", inst};
+      run(v, 4, out, sizeof(out), errlog);
+      CHECK(strstr(out, "REFUSED") != NULL, "verify-install refuses the tampered folder");
+    }
+    if (b && len > 100) {
+      b[len - 1] ^= 1;
+      pt_write_file(marker_in, b, len);
+    }
+    free(b);
+  }
+  /* a stray file next to the programs (a planted library the game could pick up) */
+  {
+    const char* v[] = {g_host, "verify-install", "--install", inst};
+    snprintf(p, sizeof(p), "%s/version.dll", inst);
+    pt_write_file(p, "MZ", 2);
+    run(v, 4, out, sizeof(out), errlog);
+    CHECK(strstr(out, "REFUSED") && err_has(errlog, "version.dll"), "a stray file in the install folder is refused");
+    remove(p);
+    run(v, 4, out, sizeof(out), errlog);
+    CHECK(strstr(out, "OK 3 files") != NULL, "and accepted again once it is gone");
+  }
+  /* the real host: a scratch folder this account can change is not a protected install */
+  {
+    const char* v[] = {g_guarded, "verify-install", "--install", inst};
+    run(v, 4, out, sizeof(out), errlog);
+    CHECK(strstr(out, "REFUSED") && (err_has(errlog, "can change it") || err_has(errlog, "folder above")),
+          "guarded verify-install refuses a folder this account can change");
+  }
+  if (!pj_process_elevated()) {
+    char inst2[900];
+    const char* a[] = {g_guarded, "install", "--to", inst2, "--file", g_lib};
+    snprintf(inst2, sizeof(inst2), "%s/inst2", g_dir);
+    n = run(a, 6, out, sizeof(out), errlog);
+    CHECK(n == 0 && err_has(errlog, "runs only from") && !exists(inst2), "guarded install runs only elevated");
+  }
+  {
+    /* the review's repro: point --lib at a library that acts when loaded. The old host loaded it before any check. */
+    const char* a[] = {g_guarded, "serve", "--lib", g_marker, "--allowlist", allow, "--audit-dir", auditdir, "--client",
+                       "grok", "--token-file", tok};
+    const char* b2[] = {g_guarded, "serve", "--install", inst, "--lib", marker_in, "--allowlist", allow, "--audit-dir",
+                        auditdir, "--client", "grok", "--token-file", tok};
+    run(a, 12, out, sizeof(out), errlog);
+    CHECK(!exists(marker_log), "guarded serve loads nothing before its checks (no install folder)");
+    run(b2, 14, out, sizeof(out), errlog);
+    CHECK(!exists(marker_log) && !err_has(errlog, "PMCP serving"),
+          "guarded serve loads nothing from a folder this account can change");
+  }
+  {
+    /* control: the marker does leave its file when something does load it, so the checks above mean something */
+    const char* v[] = {g_host, "version", "--lib", g_marker};
+    run(v, 4, out, sizeof(out), errlog);
+    CHECK(exists(marker_log), "control: loading the marker library leaves its file");
+    remove(marker_log);
+  }
+}
+
 int main(int argc, char** argv) {
   char tok[900], allow[900], maze[900], errlog[900], out[8192], sha[80], logp[1200], auditdir[900];
   static char io[1 << 20];
@@ -139,12 +273,13 @@ int main(int argc, char** argv) {
   pj_proc p;
   int n;
   pt_init(argc, argv);
-  if (argc < 7) return 2;
+  if (argc < 8) return 2;
   g_host = argv[2]; /* the unguarded test build: this test's scratch folder is not a protected place */
   g_lib = argv[3];
   g_fake = argv[4];
   g_check = argv[5];
   g_guarded = argv[6]; /* the real host, for the refusals */
+  g_marker = argv[7];  /* a library that leaves a file behind when it loads */
   pt_newdir(g_dir, sizeof(g_dir), "host");
   snprintf(tok, sizeof(tok), "%s/grok.token", g_dir);
   snprintf(allow, sizeof(allow), "%s/allow.json", g_dir);
@@ -292,5 +427,6 @@ int main(int argc, char** argv) {
     }
   }
   guarded(tok, allow, auditdir, errlog);
+  install_flow(tok, allow, auditdir, errlog);
   return pt_done("peachy_host_e2e");
 }

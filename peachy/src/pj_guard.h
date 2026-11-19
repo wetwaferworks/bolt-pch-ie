@@ -9,7 +9,10 @@
 
 #include <stddef.h>
 
-enum { PJ_GUARD_ALLOWLIST = 1, PJ_GUARD_TOKEN = 2 };
+/* PJ_GUARD_CODE: a library or program serve loads or starts, or the install manifest that lists them. Like an
+ * allowlist, neither it nor any folder above it may be changeable by this account; unlike an allowlist, an elevated
+ * process may check it (the installer verifies what it wrote). */
+enum { PJ_GUARD_ALLOWLIST = 1, PJ_GUARD_TOKEN = 2, PJ_GUARD_CODE = 3 };
 
 typedef struct pj_file_facts {
   int known;           /* every fact below was read; 0 means they could not be, and the file is refused */
@@ -27,7 +30,8 @@ void pj_file_facts_get(const char* utf8_path, pj_file_facts* f);
 int pj_process_elevated(void);
 /* Platform, run elevated: locks path down for kind. An allowlist (or its folder) becomes owned by Administrators
  * (root), full control for SYSTEM and Administrators, read-only for this account, inheritance off. A token file
- * keeps its owner and is opened to this account, SYSTEM and Administrators only (POSIX: mode 0600). 0 on success. */
+ * keeps its owner and is opened to this account, SYSTEM and Administrators only (POSIX: mode 0600). Code is locked
+ * down like an allowlist, readable and runnable by this account (POSIX: root-owned, mode 0755). 0 on success. */
 int pj_protect_path(const char* utf8_path, int kind, int is_dir);
 
 /* 0 if the file may be used as kind; otherwise -1 with a short reason (fixed text) in why. */

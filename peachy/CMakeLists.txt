@@ -21,7 +21,7 @@ find_package(Threads REQUIRED)
 
 set(PEACHY_SRC
     src/pj_base.c src/pj_json.c src/pj_sha256.c src/pj_audit.c src/pj_ring.c src/pj_allow.c src/pj_game.c
-    src/pj_planner.c src/pj_session.c src/pj_guard.c src/pj_platform_posix.c src/pj_platform_win.c)
+    src/pj_planner.c src/pj_session.c src/pj_guard.c src/pj_install.c src/pj_platform_posix.c src/pj_platform_win.c)
 
 set(_pj_san_c "")
 set(_pj_san_l "")
@@ -117,13 +117,17 @@ target_compile_definitions(peachy_test_pchie_badabi PRIVATE PEACHY_TEST_WRONG_AB
 add_library(peachy_test_mjolnir SHARED tests/doubles/test_mjolnir.c)
 peachy_target(peachy_test_mjolnir OFF)
 target_link_libraries(peachy_test_mjolnir PRIVATE peachy_core)
+# A library that leaves a file behind the moment it loads: proves serve checks code before loading it.
+add_library(peachy_test_marker SHARED tests/doubles/test_marker.c)
+peachy_target(peachy_test_marker OFF)
+target_compile_definitions(peachy_test_marker PRIVATE PEACHY_TEST_MARKER_PATH="${CMAKE_CURRENT_BINARY_DIR}/peachy-test-tmp/marker-loaded.txt")
 add_executable(peachy_fake_game tests/doubles/fake_game.c)
 target_link_libraries(peachy_fake_game PRIVATE peachy_core)
 peachy_target(peachy_fake_game OFF)
 
 set(PEACHY_TEST_TMP ${CMAKE_CURRENT_BINARY_DIR}/peachy-test-tmp)
 file(MAKE_DIRECTORY ${PEACHY_TEST_TMP})
-foreach(t json audit ring server game plan dll host pm8 guard)
+foreach(t json audit ring server game plan dll host pm8 guard install)
   add_executable(peachy_test_${t} tests/test_${t}.c)
   peachy_target(peachy_test_${t} OFF)
   target_link_libraries(peachy_test_${t} PRIVATE peachy_core)
@@ -131,7 +135,8 @@ endforeach()
 add_dependencies(peachy_test_game peachy_fake_game)
 add_dependencies(peachy_test_plan peachy_fake_game peachy_test_pchie peachy_test_pchie_badabi peachy_test_mjolnir)
 add_dependencies(peachy_test_dll peachy)
-add_dependencies(peachy_test_host peachy_host peachy_host_unguarded_test peachy peachy_fake_game peachy_auditcheck)
+add_dependencies(peachy_test_host peachy_host peachy_host_unguarded_test peachy peachy_fake_game peachy_auditcheck
+                 peachy_test_marker)
 
 add_test(NAME peachy_json COMMAND peachy_test_json ${PEACHY_TEST_TMP})
 add_test(NAME peachy_audit COMMAND peachy_test_audit ${PEACHY_TEST_TMP})
@@ -142,8 +147,10 @@ add_test(NAME peachy_plan COMMAND peachy_test_plan ${PEACHY_TEST_TMP} $<TARGET_F
          $<TARGET_FILE:peachy_test_pchie> $<TARGET_FILE:peachy_test_pchie_badabi> $<TARGET_FILE:peachy_test_mjolnir>)
 add_test(NAME peachy_dll COMMAND peachy_test_dll ${PEACHY_TEST_TMP} $<TARGET_FILE:peachy>)
 add_test(NAME peachy_host_e2e COMMAND peachy_test_host ${PEACHY_TEST_TMP} $<TARGET_FILE:peachy_host_unguarded_test>
-         $<TARGET_FILE:peachy> $<TARGET_FILE:peachy_fake_game> $<TARGET_FILE:peachy_auditcheck> $<TARGET_FILE:peachy_host>)
+         $<TARGET_FILE:peachy> $<TARGET_FILE:peachy_fake_game> $<TARGET_FILE:peachy_auditcheck> $<TARGET_FILE:peachy_host>
+         $<TARGET_FILE:peachy_test_marker>)
 add_test(NAME peachy_guard COMMAND peachy_test_guard ${PEACHY_TEST_TMP})
+add_test(NAME peachy_install COMMAND peachy_test_install ${PEACHY_TEST_TMP})
 add_test(NAME peachy_pm8_stubs COMMAND peachy_test_pm8 ${PEACHY_TEST_TMP} ${CMAKE_CURRENT_SOURCE_DIR}/configs)
 add_test(NAME peachy_no_locks COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_CURRENT_SOURCE_DIR} -P
          ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_no_locks.cmake)
@@ -157,7 +164,7 @@ else()
            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_exports.cmake)
 endif()
 set_tests_properties(peachy_json peachy_audit peachy_ring peachy_server peachy_game peachy_plan peachy_dll
-                     peachy_host_e2e peachy_pm8_stubs peachy_no_locks peachy_exports peachy_guard PROPERTIES LABELS peachy
+                     peachy_host_e2e peachy_pm8_stubs peachy_no_locks peachy_exports peachy_guard peachy_install PROPERTIES LABELS peachy
                      TIMEOUT 600)
 
 # Fuzzing: an in-house mutation fuzzer that runs everywhere, plus libFuzzer entry points when asked.
