@@ -460,6 +460,46 @@ add_test(NAME pchie_ternary_research COMMAND pchie_ternary_research_test)
 add_executable(pchie_ternary_measure tools/pchie_ternary_measure.cpp)
 target_link_libraries(pchie_ternary_measure PRIVATE pchie_ternary_research Threads::Threads)
 
+# Ternary converter (opt-in, clean-room; see docs/ternary/README.md, "Converter"). Reads a GGUF or safetensors model
+# one tensor at a time and writes PTN1 ternary tensors. The group fit runs on the CPU, or on CUDA when the CUDA
+# backend is built (same source, same bits). Nothing links it into a model.
+if(TARGET pchie_cuda)
+  set(_pchie_tconv_backend src/pchie_ternary_convert_cuda.cu)
+else()
+  set(_pchie_tconv_backend src/pchie_ternary_convert_nocuda.cpp)
+endif()
+add_library(pchie_ternary_convert STATIC src/pchie_ternary_convert.cpp ${_pchie_tconv_backend})
+target_include_directories(pchie_ternary_convert PUBLIC include)
+target_link_libraries(pchie_ternary_convert PUBLIC pchie_ternary pchie_core Threads::Threads)
+if(MSVC)
+  target_compile_options(pchie_ternary_convert PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/fp:precise /W4>)
+else()
+  target_compile_options(pchie_ternary_convert PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off -fno-fast-math -Wall -Wextra>)
+endif()
+if(TARGET pchie_cuda)
+  set_target_properties(pchie_ternary_convert PROPERTIES CUDA_STANDARD 17)
+  target_compile_options(pchie_ternary_convert PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-fmad=false -prec-div=true -prec-sqrt=true -ftz=false>
+                         $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>>:-Xcompiler=/fp:precise>)
+  target_link_libraries(pchie_ternary_convert PUBLIC CUDA::cudart)
+endif()
+add_executable(pchie_ternary_convert_tool tools/pchie_ternary_convert.cpp)
+set_target_properties(pchie_ternary_convert_tool PROPERTIES OUTPUT_NAME pchie_ternary_convert)
+target_link_libraries(pchie_ternary_convert_tool PRIVATE pchie_ternary_convert)
+add_executable(pchie_ternary_convert_test tests/pchie_ternary_convert_test.cpp)
+target_link_libraries(pchie_ternary_convert_test PRIVATE pchie_ternary_convert pchie_ternary_research)
+add_test(NAME pchie_ternary_convert COMMAND pchie_ternary_convert_test)
+# CPU vs CUDA parity. Exits 77 (skipped) on a build or a machine without CUDA.
+add_executable(pchie_ternary_convert_cuda_test tests/pchie_ternary_convert_cuda_test.cpp)
+target_link_libraries(pchie_ternary_convert_cuda_test PRIVATE pchie_ternary_convert)
+add_test(NAME pchie_ternary_convert_cuda COMMAND pchie_ternary_convert_cuda_test)
+set_tests_properties(pchie_ternary_convert_cuda PROPERTIES LABELS cuda SKIP_RETURN_CODE 77 TIMEOUT 900)
+if(PCHIE_FUZZ)
+  add_executable(pchie_ternary_convert_fuzz fuzz/pchie_ternary_convert_fuzz.cpp)
+  target_link_libraries(pchie_ternary_convert_fuzz PRIVATE pchie_ternary_convert)
+  add_test(NAME pchie_ternary_convert_fuzz_smoke COMMAND pchie_ternary_convert_fuzz 50000 1)
+  set_tests_properties(pchie_ternary_convert_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 900)
+endif()
+
 # Peachy (PMCP): the standalone MCP library, peachy.dll / libpeachy.so, written in C11. It builds on its own too
 # (cmake -S peachy). See peachy/README.md.
 option(PCHIE_PEACHY "Build Peachy (PMCP) and its tests" ON)

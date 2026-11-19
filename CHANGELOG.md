@@ -2,6 +2,10 @@
 
 All notable changes to Bolt PCHIE are listed here, newest first.
 
+## Unreleased
+
+- **Ternary converter.** `pchie_ternary_convert` reads a GGUF or safetensors model one tensor at a time and writes its weight matrices as PTN1 ternary tensors, using the exact least-squares fit (or absmean) per 128-weight block. The fit runs on the CPU or with CUDA and gives the same bits either way; the tests check it. Both header readers treat the file as untrusted, and the model file is opened read-only. Nothing is wired into a model yet, and no official hash moved. See `docs/ternary/README.md`, "Converter".
+
 ## 0.1.2
 
 ### Security: overnight review

@@ -20,7 +20,8 @@ under half of Q4_K, and the inner product needs only integer adds.
 | AVX2 kernel | done, matches the reference bit for bit |
 | NEON kernel (AArch64, with and without the dot-product instructions) | done; checked under emulation, not yet on a phone |
 | Run-time CPU dispatch | done (CPUID and OS check on x86, HWCAP on AArch64 Linux and Android) |
-| Converter from existing models, model wiring, CUDA kernel | not started |
+| Converter from GGUF and safetensors (CPU and CUDA fit, same bits) | done; not wired into a model |
+| Model wiring, CUDA matvec kernel | not started |
 
 ## The math
 
@@ -121,6 +122,62 @@ wired into a model, and the shipping path above does not use it.
   channels inside blocks, alternating +1/-1 weights, extreme gammas); `pchie_ternary_measure` prints the tables.
 
 The polynomial coefficients and every table are our own fits; no outside code was consulted for any of it.
+## Converter
+
+`pchie_ternary_convert` turns the weight matrices of an existing model into PTN1 tensors (I2 packing, one scale per
+128-weight block). It reads GGUF (F32, F16, BF16, Q8_0, Q4_K, Q6_K) and safetensors (F32, F16, BF16), one tensor at
+a time and in row chunks (32 Mi weights by default), so memory use stays flat however big the model is. The model
+file is opened read-only and never written. Nothing here is wired into a model yet.
+
+```
+pchie_ternary_convert MODEL --list
+pchie_ternary_convert MODEL --out DIR [--fit lsq|absmean] [--backend cpu|cuda] [--check-parity]
+                      [--match TEXT]... [--skip TEXT]... [--no-default-skips] [--limit N] [--threads N]
+                      [--chunk-mweights N]
+```
+
+- **Fits.** `lsq` (the default) is the exact least-squares ternary fit of each 128-weight group: sort |w| from
+  largest to smallest and take gamma = P_k / k for the first k that maximizes P_k^2 / k, where P_k is the sum of
+  the k largest. `absmean` is the BitNet b1.58 rule and gives exactly what `quantize_absmean` gives. Both are the
+  research path's `ternarize_group` (half-to-even ties), bit for bit; the tests check it. The codes are then
+  assigned against the stored float gamma, as in the rest of the ternary path.
+- **CPU and CUDA give the same bits.** Both run `fit_group` from `include/pchie/pchie_ternary_fit.h`, which uses
+  only IEEE float and double add, multiply, divide and compare, built with FMA contraction off on the CPU and
+  `-fmad=false`, IEEE division and no flush-to-zero in CUDA. The CUDA kernel runs one warp per 32 groups: the
+  warp sorts each group's |w| with a bitonic network in shared memory (any correct sort gives the same sequence),
+  then each thread runs the scan and the codes for its own group. One deliberate change from the research code:
+  `w / gamma > 0.5` is tested as `w > gamma / 2` in double. For two floats the two tests always agree (halving a
+  float is exact in double, and a float w that is not gamma / 2 is much more than half a double ulp away from it),
+  and it saves 128 double divisions per group. A test checks the two rules on 1.6 million pairs, including every
+  neighbour of the exact tie.
+- **Untrusted input.** GGUF goes through the repo's reader, which checks counts, shapes, alignment and every extent
+  against the file. The converter also refuses a file with a tensor type of unknown size (it could hide an
+  overlap) or two tensors that overlap. The safetensors reader checks the header length against the file and a
+  16 MiB ceiling, parses the JSON with MiniJson (duplicate keys refused, depth capped), allows only `dtype`,
+  `shape` and `data_offsets` per tensor and string values in `__metadata__`, requires every dimension and offset
+  to be a whole number from 0 to 2^53, begin <= end <= data size, end - begin = element count x dtype size
+  (overflow checked), and no overlaps. A refusal leaves nothing behind. Decoded weights must be finite.
+- **Output.** `DIR` must be new or empty and may not sit inside the model's folder; no file is ever overwritten
+  (each is written as `.partial` and renamed). Per tensor: `NNNN_name.ptn`, re-parsed with the strict parser before
+  it is written. Then `manifest.tsv` (shape, source type, error statistics, timings, SHA-256 of each `.ptn`),
+  `layers.tsv` and `tensors_by_kind.tsv` (error per layer and per tensor kind) and `summary.txt` (totals, timing,
+  CUDA memory). By default names containing `embd`, `embed`, `vision` or `audio` are skipped.
+- **Error statistics** compare each weight with gamma * q: relative error ||W - R|| / ||W||, cosine, RMSE, the
+  largest absolute error and the share of zero codes, summed in double row by row in order, so the numbers do not
+  depend on the thread count. They describe how close each ternary matrix is to its source matrix. They are not a
+  measure of model quality; that needs the model wired up and evaluated.
+- **Threads.** CPU workers each take a fixed, disjoint range of groups and are joined before the results are read.
+  There are no locks.
+
+Tests: `pchie_ternary_convert_test` (the fit against the research fit and the shipping quantizer, edge groups,
+least squares never worse than absmean, thread-count independence, non-finite input, malformed safetensors
+headers (offsets, sizes, dimensions, dtypes, fields, overlaps, duplicates, header lengths), GGUF and safetensors files end to end with every decodable type, streaming in one-row chunks, overlapping
+and truncated files); `pchie_ternary_convert_cuda_test` (label `cuda`; CPU and CUDA codes and scales compared on
+every weight kind, around the 32-group block edge and on hand-made edge groups, plus a streamed file with parity
+checking on; exits 77, shown as skipped, without CUDA); `pchie_ternary_convert_fuzz` (with `PCHIE_FUZZ=ON`; a
+reproducible mutation fuzzer for the safetensors header reader that re-checks every accepted layout and decodes
+and fits each small tensor; also a libFuzzer target with `-DPCHIE_LIBFUZZER`).
+
 ## Clean-room provenance
 
 Every line here was written from scratch from published descriptions and plain math. No source code from
@@ -148,3 +205,7 @@ Our own choices, not taken from any of these: the lane-interleaved I2 block layo
 per-block activation sums, the B3 padding rule, the `PTN1` format, the shared float tail and the test bench.
 
 The pinned rounding routine and the thread pool interface come from this repo.
+
+The converter (`pchie_ternary_convert`) reads GGUF through this repo's own reader and dequantizers. Its safetensors
+reader was written from the format's public description (an 8-byte little-endian header length, then a JSON object
+giving each tensor's dtype, shape and data offsets). The least-squares fit is the research path's, above.
