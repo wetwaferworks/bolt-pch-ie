@@ -9,6 +9,7 @@
 #include <intrin.h>
 #endif
 #include <stdexcept>
+#include <exception>
 #include <thread>
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -92,7 +93,22 @@ struct ThreadPool::Impl {
     std::atomic<int> remaining{0};                   // JOIN counter (workers still in the phase)
     std::atomic<uint64_t> gen{0};                    // FORK generation
     std::atomic<bool> stop{false};
-    void run_items() { for (int i; (i = next.fetch_add(1, std::memory_order_relaxed)) < count;) (*fn)(i); }
+    // An exception from fn never escapes a thread: the first one is kept (won by a compare-exchange, no lock),
+    // the rest of the phase's items are skipped, and parallel_for rethrows it on the caller after the join, so
+    // no worker can still be using fn when the caller's frame unwinds, and no worker calls terminate.
+    std::atomic<int> failed{0};
+    std::exception_ptr error;                        // written only by the thread that won `failed`
+    void run_items() noexcept {
+        for (int i; (i = next.fetch_add(1, std::memory_order_relaxed)) < count;) {
+            if (failed.load(std::memory_order_relaxed)) continue;
+            try {
+                (*fn)(i);
+            } catch (...) {
+                int expect = 0;
+                if (failed.compare_exchange_strong(expect, 1, std::memory_order_acq_rel)) error = std::current_exception();
+            }
+        }
+    }
 };
 ThreadPool::ThreadPool(int n) : impl_(new Impl), n_(std::max(1, n)) {
     for (int t = 1; t < n_; ++t)
@@ -123,6 +139,8 @@ ThreadPool::~ThreadPool() {
 void ThreadPool::parallel_for(int count, const std::function<void(int)>& fn) {
     if (n_ == 1 || count == 1) { for (int i = 0; i < count; ++i) fn(i); return; }
     impl_->fn = &fn; impl_->count = count;
+    impl_->failed.store(0, std::memory_order_relaxed);
+    impl_->error = nullptr;
     impl_->next.store(0, std::memory_order_relaxed);
     impl_->remaining.store(n_ - 1, std::memory_order_relaxed);
     impl_->gen.fetch_add(1, std::memory_order_acq_rel);             // FORK edge
@@ -130,6 +148,11 @@ void ThreadPool::parallel_for(int count, const std::function<void(int)>& fn) {
     unsigned spins = 0;
     while (impl_->remaining.load(std::memory_order_acquire) != 0) {  // JOIN edge
         if (++spins < 4096) pchie_cpu_relax(); else std::this_thread::yield();
+    }
+    if (impl_->failed.load(std::memory_order_acquire)) {  // after the JOIN edge: every worker is done with fn
+        std::exception_ptr e = impl_->error;
+        impl_->error = nullptr;
+        std::rethrow_exception(e);
     }
 }
 

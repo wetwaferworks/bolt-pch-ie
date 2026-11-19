@@ -422,6 +422,9 @@ add_test(NAME pchie_anchor_verifier COMMAND pchie_anchor_verifier_test ${CMAKE_C
 # the maze drivers; every test below writes its receipts to a folder in the build tree, never the user's ledger.
 add_executable(pchie_neml tools/pchie_neml.cpp)
 target_link_libraries(pchie_neml PRIVATE pchie_core)
+add_executable(pchie_threadpool_test tests/pchie_threadpool_test.cpp)
+target_link_libraries(pchie_threadpool_test PRIVATE pchie_core)
+add_test(NAME pchie_threadpool COMMAND pchie_threadpool_test)
 add_executable(pchie_neml_test tests/pchie_neml_test.cpp)
 target_link_libraries(pchie_neml_test PRIVATE pchie_core)
 add_test(NAME pchie_neml COMMAND pchie_neml_test)
