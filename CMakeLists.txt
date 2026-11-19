@@ -566,6 +566,7 @@ endif()
 # Low-rank binary factorization (NanoQuant LB-ADMM initialization). Clean-room C++
 # from the published method; see include/pchie/pchie_nanoquant.h and docs/ternary/nanoquant.md.
 add_library(pchie_nanoquant STATIC src/pchie_nanoquant.cpp)
+target_sources(pchie_nanoquant PRIVATE src/pchie_nanoquant_recon.cpp)
 target_include_directories(pchie_nanoquant PUBLIC include)
 set_target_properties(pchie_nanoquant PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 find_package(OpenMP)
@@ -590,6 +591,9 @@ if(PCHIE_CUDA AND CMAKE_CUDA_COMPILER)
   endif()
   target_link_libraries(pchie_nanoquant PUBLIC CUDA::cudart CUDA::cublas CUDA::cusolver)
 endif()
+if(WIN32)
+  target_link_libraries(pchie_nanoquant PUBLIC user32)
+endif()
 add_executable(pchie_nanoquant_tool tools/pchie_nanoquant.cpp peachy/src/pj_sha256.c)
 set_target_properties(pchie_nanoquant_tool PROPERTIES OUTPUT_NAME pchie_nanoquant CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(pchie_nanoquant_tool PRIVATE src peachy/src)
@@ -604,6 +608,19 @@ set_target_properties(pchie_nanoquant_test PROPERTIES CXX_STANDARD 17 CXX_STANDA
 target_link_libraries(pchie_nanoquant_test PRIVATE pchie_nanoquant)
 add_test(NAME pchie_nanoquant COMMAND pchie_nanoquant_test)
 set_tests_properties(pchie_nanoquant PROPERTIES TIMEOUT 900)
+add_executable(pchie_nanoquant_recon_test tests/pchie_nanoquant_recon_test.cpp)
+set_target_properties(pchie_nanoquant_recon_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_link_libraries(pchie_nanoquant_recon_test PRIVATE pchie_nanoquant)
+add_test(NAME pchie_nanoquant_recon COMMAND pchie_nanoquant_recon_test)
+set_tests_properties(pchie_nanoquant_recon PROPERTIES TIMEOUT 300)
+add_executable(pchie_nq_idle tools/pchie_nq_idle.cpp)
+set_target_properties(pchie_nq_idle PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_link_libraries(pchie_nq_idle PRIVATE pchie_nanoquant)
+if(MSVC)
+  target_compile_options(pchie_nq_idle PRIVATE /fp:precise /W4)
+endif()
+
+
 
 # The left and right hemispheres on a real model (see docs/hemispheres.md): MJHEMI2 sample
 # sets with the same bytes as Mjolnir's, the grid-maze world with its answer key, weight

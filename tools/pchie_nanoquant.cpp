@@ -1,6 +1,7 @@
 /* Bolt PCHIE - NanoQuant factor tool: reads a safetensors or GGUF model read-only
  * and writes low-rank binary factors under --out. See docs/ternary/nanoquant.md. */
 #include "pchie/pchie_nanoquant.h"
+#include "pchie/pchie_nanoquant_recon.h"
 #include "pchie/pchie_ternary_convert.h"
 extern "C" {
 #include "pj_sha256.h"
@@ -152,12 +153,78 @@ static void usage() {
                  "usage: pchie_nanoquant factor MODEL --out DIR [--bits 1.0] [--bits 0.8]\n"
                  "                                 [--iters 400] [--seed 0] [--rank N]\n"
                  "                                 [--cpu | --cuda]\n"
-                 "  --cpu   keep the factorizer on the host\n"
-                 "  --cuda  require the CUDA factorizer (fails if the device cannot take the layer)\n"
-                 "  default is CUDA when a device is present, otherwise the host\n");
+                 "       pchie_nanoquant reconstruct --out DIR [--tiny] [--blocks N] [--hidden N]\n"
+                 "                                 [--mid N] [--vocab N] [--samples N] [--seq N]\n"
+                 "                                 [--bits 1.0] [--iters 400] [--seed 0]\n"
+                 "                                 [--stop-after-blocks N] [--pause-input-ms MS]\n"
+                 "                                 [--respect-gpu-busy] [--cpu | --cuda]\n"
+                 "  factor: read a model read-only and write low-rank binary factors under --out.\n"
+                 "  reconstruct: resume (or start, with --tiny) a block+model reconstruction under --out.\n"
+                 "  Originals are never written. A reconstruct without --tiny resumes an existing journal.\n");
+}
+
+static int cmd_reconstruct(int argc, char **argv) {
+    const char *out = nullptr;
+    int tiny = 0, blocks = 2, hidden = 16, mid = 32, vocab = 16;
+    pchie_nq_recon_config cfg;
+    pchie_nq_recon_config_init(&cfg);
+    cfg.use_cuda = 1; /* auto; tests and the idle runner can pass --cpu */
+    for (int i = 2; i < argc; ++i) {
+        auto need = [&](int) { return i + 1 < argc; };
+        if (std::strcmp(argv[i], "--out") == 0 && need(1)) out = argv[++i];
+        else if (std::strcmp(argv[i], "--tiny") == 0) tiny = 1;
+        else if (std::strcmp(argv[i], "--blocks") == 0 && need(1)) blocks = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--hidden") == 0 && need(1)) hidden = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--mid") == 0 && need(1)) mid = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--vocab") == 0 && need(1)) vocab = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--samples") == 0 && need(1)) cfg.samples = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--seq") == 0 && need(1)) cfg.seq = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--bits") == 0 && need(1)) cfg.bits = (float)std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--iters") == 0 && need(1)) cfg.admm_outer_iters = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--seed") == 0 && need(1)) cfg.seed = (uint64_t)std::strtoull(argv[++i], nullptr, 10);
+        else if (std::strcmp(argv[i], "--stop-after-blocks") == 0 && need(1)) cfg.stop_after_blocks = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--pause-input-ms") == 0 && need(1)) cfg.pause_if_input_ms = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--respect-gpu-busy") == 0) cfg.respect_gpu_busy = 1;
+        else if (std::strcmp(argv[i], "--cpu") == 0) cfg.use_cuda = 0;
+        else if (std::strcmp(argv[i], "--cuda") == 0) cfg.use_cuda = 2;
+        else {
+            usage();
+            return 2;
+        }
+    }
+    if (!out) {
+        usage();
+        return 2;
+    }
+    /* Tiny tests should stay off the GPU unless --cuda was given. */
+    if (tiny && cfg.use_cuda == 1) cfg.use_cuda = 0;
+    if (tiny && cfg.seq == 2048) cfg.seq = 8;
+    if (tiny && cfg.samples == 128) cfg.samples = 8;
+    pchie_nq_recon_stats st;
+    char err[PCHIE_NQ_ERROR_CAPACITY] = {0};
+    pchie_nq_recon_status s;
+    if (tiny)
+        s = pchie_nq_recon_tiny(out, blocks, hidden, mid, vocab, &cfg, &st, err, sizeof err);
+    else
+        s = pchie_nq_recon_resume(out, &cfg, &st, err, sizeof err);
+    const char *name = "ok";
+    if (s == PCHIE_NQ_RECON_PAUSED) name = "paused";
+    else if (s == PCHIE_NQ_RECON_BUSY) name = "busy";
+    else if (s == PCHIE_NQ_RECON_IO) name = "io";
+    else if (s == PCHIE_NQ_RECON_MISMATCH) name = "mismatch";
+    else if (s == PCHIE_NQ_RECON_BAD_ARGUMENT) name = "bad-argument";
+    else if (s == PCHIE_NQ_RECON_NO_MEMORY) name = "no-memory";
+    else if (s != PCHIE_NQ_RECON_OK) name = "error";
+    std::printf("reconstruct %s  blocks %d already %d this_run %d  kd_loss %.6g\n", name, st.blocks,
+                st.blocks_already, st.blocks_done_this_run, st.model_kd_loss);
+    if (err[0]) std::fprintf(stderr, "%s\n", err);
+    if (s == PCHIE_NQ_RECON_OK) return 0;
+    if (s == PCHIE_NQ_RECON_PAUSED || s == PCHIE_NQ_RECON_BUSY) return 0;
+    return 1;
 }
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && std::strcmp(argv[1], "reconstruct") == 0) return cmd_reconstruct(argc, argv);
     const char *model = nullptr, *out = nullptr;
     std::vector<float> bits_list;
     int iters = 400, rank_override = 0, use_cuda = 1;

@@ -6,12 +6,12 @@ Research, ICML 2026). The first milestone is the published initialization: a
 Hessian-aware precondition, latent binary ADMM (LB-ADMM), magnitude balancing, and
 the mean-absolute scale extraction, plus a short least-squares polish of the scales
 with the signs held fixed. Block reconstruction, STE refinement and the 128-sample
-model-level scale fit are later work.
+model-level scale fit are described under "Block and model reconstruction" below.
 
 For a weight matrix `W` of shape `rows x cols`:
 
 ```
-W[i,j]  ~  s1[i] * (U[i,:] · V[j,:]) * s2[j]
+W[i,j]  ~  s1[i] * (U[i,:] Â· V[j,:]) * s2[j]
 ```
 
 with `U` and `V` in `{+1,-1}` and rank chosen from a bits-per-weight target:
@@ -53,19 +53,99 @@ double-buffered tiles with `cudaMemcpyAsync` on a pair of copy streams that
 overlap the cuBLAS work. Tile size is chosen from `cudaMemGetInfo` at the start
 of each tensor, leaving 256 MiB of device memory in reserve so a 4 GB card is
 not asked to page through WDDM shared memory. cuBLAS runs in pedantic / IEEE
-mode (no TF32). The r×r system is factored and solved on the device (cuSOLVER) so the many right-hand sides do not sit on the host.
+mode (no TF32). The rÃ—r system is factored and solved on the device (cuSOLVER) so the many right-hand sides do not sit on the host.
 
 CPU vs CUDA parity is checked in `pchie_nanoquant_test` on small matrices, with
 documented tolerances:
 
-- `|cosine_cpu - cosine_cuda| ≤ 1e-4`
-- `|rel_cpu - rel_cuda| ≤ 1e-4`
-- relative L2 between the two reconstructions `≤ 1e-3`
-- scale L2 relative `≤ 1e-3` when every sign agrees
+- `|cosine_cpu - cosine_cuda| â‰¤ 1e-4`
+- `|rel_cpu - rel_cuda| â‰¤ 1e-4`
+- relative L2 between the two reconstructions `â‰¤ 1e-3`
+- scale L2 relative `â‰¤ 1e-3` when every sign agrees
 
 Signs may differ where a latent is under `1e-5` in magnitude; a reconstruction
 that stays inside those tolerances still passes. The CUDA section is skipped,
 not failed, when the test is built or run without a device.
+
+## Block and model reconstruction (Milestone 2)
+
+The published reconstruction schedule is implemented in C++ for a stack of residual
+MLP blocks, `y = x + W2 gelu(W1 x)`. That is enough to exercise the loop and the
+resume path without a full decoder forward. A later hook can drive a real model
+once that forward exists.
+
+For each linear in a block, in order:
+
+1. The remaining dense (not-yet-factored) linears are tuned with AdamW (weight
+   decay 0), cosine learning-rate decay, and a weighted MSE against the teacher
+   block's outputs. Importance follows the paper: the down-projection's output
+   Hessian diagonal, with Ledoit-Wolf-style shrinkage `H' = (1-Î±)H + Î± mean(H)`
+   and `Î± = 0.4`.
+2. That linear is factorized with the Milestone 1 LB-ADMM initializer (streamed
+   CUDA when `--cuda` is requested).
+3. The new factors are refined with a straight-through estimator (signs in the
+   forward pass, identity in the backward pass), then the signs are finalized.
+
+After every linear in the block has been replaced, the student's activations
+become the next block's inputs, and the teacher's activations are the
+full-precision block outputs. After the last block, a scale-only
+knowledge-distillation pass trains the scales against teacher logits (KL), with
+the head held fixed.
+
+Defaults match the paper's counts where they apply to this path: 128 calibration
+samples, 8 epochs for each of the three stages, non-factored batch 4 and
+learning rate `1e-4`, factored and model-distillation batch 1 and learning rates
+`1e-5`, 400 ADMM iterations with a linear penalty from 0 to 1 and ridge 0.03.
+Sequence length defaults to 2048; the tiny test uses a much shorter sequence.
+
+### Checkpoints and resume
+
+Output is only under `--out`. Each finished block is written to
+`blocks/block-NNN.nqb` through a temporary file, `fsync`, and an atomic rename
+(`MoveFileEx` with `REPLACE_EXISTING` on Windows). A SHA-256 of the payload is
+appended and checked on read. A progress journal `journal.nqj` (format `NQJ1`)
+records the teacher snapshot hash, the calibration hash, each block hash, and
+whether the distillation pass has finished (`kd-final.nqk`). A kill in the
+middle of a block leaves the last complete journal entry; the next run restarts
+that block from the saved teacher weights and activations with the same seed,
+and is bit-identical to a run that was never interrupted. The test
+`pchie_nanoquant_recon_test` checks this on a two-block toy model, on the CPU,
+so a live GPU initialization job is barely touched.
+
+```
+pchie_nanoquant reconstruct --out DIR --tiny --cpu
+pchie_nanoquant reconstruct --out DIR --pause-input-ms 2000 --respect-gpu-busy
+```
+
+`--tiny` starts a residual-MLP toy run (or resumes it if the journal is already
+there). Without `--tiny`, the tool only resumes an existing journal; it will not
+invent a job or write an original model.
+
+### Idle runner
+
+`pchie_nq_idle` is meant to be launched by Task Scheduler. It watches a
+directory (default `D:\scratch\nanoquant-jobs`). A `job.txt` file in that
+directory names a reconstruct output directory that already has a journal. If
+the user has used the machine in the last two seconds (`GetLastInputInfo`), or
+the GPU is already in use by `pchie_nanoquant`, a Play build (A9â€“E9,
+PlayMutexFree, Play-G1), or any other compute process `nvidia-smi` reports, the
+runner exits without starting anything. An empty watch directory is a no-op.
+
+While a job is running, the reconstruct process itself also pauses within
+seconds of user input, and the idle runner will stop the child if it has not
+exited shortly after that. Checkpoints are atomic, so a mid-block stop is safe
+to resume.
+
+A user-level task definition is in `tools/pchie_nq_idle.xml` (an idle trigger
+and a nightly 02:00 local start, `RunOnlyIfIdle`, `StopOnIdleEnd`, least
+privilege, no administrator). Register it with:
+
+```
+schtasks /Create /TN "PCHIE NanoQuant reconstruct (idle)" /XML "D:\scratch\pchie-2026-11-17\tools\pchie_nq_idle.xml" /F
+```
+
+If that command is refused, leave the XML and that one-line command as they are;
+do not elevate just to register the task.
 
 ## Credits
 
@@ -84,7 +164,7 @@ NanoQuant builds on, and we credit, the methods named in the paper and its
 references, including:
 
 - Low-rank binary factorization as used in LittleBit (Lee et al., 2025) and DBF
-  (Boža and Macko, 2026), which NanoQuant follows for the `s1 (U V^T) s2` form.
+  (BoÅ¾a and Macko, 2026), which NanoQuant follows for the `s1 (U V^T) s2` form.
 - The alternating direction method of multipliers (Gabay and Mercier, 1976;
   Boyd et al.).
 - Sign-Value Independent Decomposition (Pouransari, Cao and Tuzel, 2020; also
@@ -92,7 +172,7 @@ references, including:
 - Kronecker-factored approximate curvature (K-FAC) for a Hessian-weighted
   reconstruction (Martens and Grosse, 2015), and Ledoit-Wolf shrinkage of the
   diagonal estimates (Ledoit and Wolf, 2004).
-- The straight-through estimator (Bengio, Léonard and Courville, 2013), used in
+- The straight-through estimator (Bengio, LÃ©onard and Courville, 2013), used in
   the later block-reconstruction stage, not in this initialization.
 - The broader post-training quantization line the paper sits in, including
   AdaRound (Nagel et al., 2020), GPTQ (Frantar et al., 2022) and related
