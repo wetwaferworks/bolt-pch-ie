@@ -222,6 +222,12 @@ if(WIN32)
   add_executable(pchie_lk_visnav vision/pchie_lk_visnav.cpp)
   target_include_directories(pchie_lk_visnav PRIVATE vision)
   target_link_libraries(pchie_lk_visnav PRIVATE pchie_core pchie_research user32)  # research: --obs ascii only
+  # --neml-inject needs this build option AND a scratch* output folder (include/pchie/neml/NemlInject.h).
+  option(PCHIE_ALLOW_NEML_INJECT "Let pchie_lk_visnav accept --neml-inject (scratch output folders only)" OFF)
+  if(PCHIE_ALLOW_NEML_INJECT)
+    target_compile_definitions(pchie_lk_visnav PRIVATE PCHIE_ALLOW_NEML_INJECT=1)
+    message(STATUS "PCHIE_ALLOW_NEML_INJECT: ON (pchie_lk_visnav accepts --neml-inject into scratch* folders)")
+  endif()
 endif()
 add_executable(pchie_gguf_probe tests/pchie_gguf_probe.cpp)
 target_link_libraries(pchie_gguf_probe PRIVATE pchie_core)

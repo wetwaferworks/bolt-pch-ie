@@ -55,6 +55,7 @@
 #ifdef PCHIE_SCRATCH_CUDA_VISNAV
 #include "cuda/CudaNemotronModel.h"  // Scratch labeled CUDA IModel adapter
 #endif
+#include "pchie/neml/NemlInject.h"  // --neml-inject gates (build option + scratch output only)
 #include "pchie/neml/NemlStore.h"  // episodic memory: a receipt per nav run (on by default; --neml off)
 #include <ctime>
 #include "pchie/Sha256.h"
@@ -602,6 +603,11 @@ int main(int argc, char** argv) {
     if (const char* e = std::getenv("PCHIE_GAME")) a.game = e;
     else if (const char* e = std::getenv("LITHOKRAFT")) a.game = e;
   }
+  {
+    std::string why;
+    if (!neml::inject_allowed(a.neml_inject, neml::inject_build_allowed(), a.out, why)) { std::fprintf(stderr, "%s\n", why.c_str()); return 2; }
+  }
+  std::string neml_inject_sha;  // SHA-256 of the injected memory block (only with --neml-inject)
   const bool needs_game = (a.mode == "speed" || a.mode == "probe" || a.mode == "nav");
   if (needs_game && a.game.empty()) {
     std::fprintf(stderr, "Set --game to your LithoKraft executable, or set PCHIE_GAME or LITHOKRAFT.\n");
@@ -652,7 +658,11 @@ int main(int argc, char** argv) {
         if (a.neml_inject) { say("FAIL NEML: --neml-inject needs a ledger that passes its checks"); return false; }
       }
       say("NEML: memory block %zu tokens (cap 384, real tokenizer); recording=%d inject=%d", nt, int(neml::process_config().record), int(a.neml_inject));
-      if (a.neml_inject) brain.neml_prefix = dg;
+      if (a.neml_inject) {
+        brain.neml_prefix = dg;
+        neml_inject_sha = sha_hex(std::vector<uint8_t>(dg.begin(), dg.end()));
+        say("NEML INJECT ON (scratch only): neml_inject=1 memory block sha256=%s is the first link of the side chain", neml_inject_sha.c_str());
+      }
     }
     const double t1 = now_s();
     if (!brain.prime(model, err)) { say("FAIL prime: %s", err.c_str()); return false; }
@@ -881,6 +891,11 @@ int main(int argc, char** argv) {
 
     // ---------------- nav: vision-only, model-chosen, no step list ----------------
     std::vector<uint8_t> chain(32, 0); size_t chain_len = 0;
+    if (a.neml_inject) {  // record the injection in the chain itself, before any step
+      const std::string rec = "neml_inject=1|memory_block_sha256=" + neml_inject_sha;
+      std::vector<uint8_t> buf(chain); const auto rh = Sha256::hash(reinterpret_cast<const uint8_t*>(rec.data()), rec.size());
+      buf.insert(buf.end(), rh.begin(), rh.end()); chain = Sha256::hash(buf.data(), buf.size()); ++chain_len;
+    }
     std::ofstream olog(fs::path(a.out) / "visnav_obs_side_log.txt", std::ios::binary);
     std::map<std::pair<int, int>, int> visits;  // dead-reckoned from the agent's OWN committed moves
     ShutMemory shut;                            // --way-shut: own record of timed-out walks (never the map)

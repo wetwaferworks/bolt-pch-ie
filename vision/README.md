@@ -11,7 +11,7 @@ One driver, `pchie_lk_visnav.cpp`. The older way-shut, reach, seeded-maze, and C
 | `--b1-seed`, `--b1-size` | Stratify generated B1 mazes. Defaults are seed 1 and size 16. |
 | `--act-blank` | Holdout: act on the blank-view choice. |
 | `--game-res WxH` | Game window resolution. Capture size stays `cap_w` x `cap_h`. Default `640x360`. |
-| `--neml on\|off\|DIR`, `--neml-inject` | Episodic memory ledger. A receipt is written after every nav run unless `--neml off`; DIR picks another ledger folder. Inject (the memory block in the prompt) stays off. |
+| `--neml on\|off\|DIR`, `--neml-inject` | Episodic memory ledger. A receipt is written after every nav run unless `--neml off`; DIR picks another ledger folder. Inject (the memory block in front of the trusted rules) stays off: it is refused unless the build was configured with `-DPCHIE_ALLOW_NEML_INJECT=ON` (off by default) and `--out` is under a folder named `scratch*`; a run that passes both puts `neml_inject=1` and the block's SHA-256 first in its side chain and in its report. |
 | `PCHIE_SCRATCH_CUDA_VISNAV` | Compile-time. The decide step uses the CUDA adapter. The CPU build does not define it. |
 
 The ledger lives in `include/pchie/neml/` (its checks are `tests/pchie_neml_test.cpp`). `cuda/CudaNemotronModel.h` is the labeled CUDA adapter. `scripts/extract.py` is the pure-region extractor. `visnav_pure_test.cpp` needs `pure.inc`, which is generated and not checked in: from `vision/`, run `python scripts/extract.py pchie_lk_visnav.cpp pure.inc`.

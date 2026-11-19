@@ -5,6 +5,7 @@
 #include "pchie/MazeGrid.h"
 #include "pchie/ModelPath.h"
 #include "pchie/Sha256HashChain.h"
+#include "pchie/neml/NemlInject.h"
 #include "pchie/neml/NemlLedger.h"
 #include "pchie/neml/NemlQuery.h"
 #include "pchie/neml/NemlStore.h"
@@ -529,6 +530,19 @@ int main() {
 #endif
     std::error_code ec;
     fs::remove_all(fs::path(c.dir), ec);
+  }
+  // ---- --neml-inject: two independent gates, off by default ----
+  {
+    std::string why;
+    const fs::path tmp = fs::temp_directory_path();
+    check(neml::inject_allowed(false, false, "", why), "inject gate: not asked for, nothing to refuse (default runs unchanged)");
+    check(!neml::inject_build_allowed(), "inject gate: the normal build does not allow it");
+    check(!neml::inject_allowed(true, false, (tmp / "scratch-x" / "out").string(), why) && why.find("PCHIE_ALLOW_NEML_INJECT") != std::string::npos,
+          "inject gate: refused by a build without the option, even in a scratch folder");
+    check(!neml::inject_allowed(true, true, (tmp / "runs" / "official").string(), why) && why.find("scratch") != std::string::npos,
+          "inject gate: refused for an output folder that is not under scratch*");
+    check(!neml::inject_allowed(true, true, (tmp / "scratch" / ".." / "official").string(), why), "inject gate: '..' out of a scratch folder is refused");
+    check(neml::inject_allowed(true, true, (tmp / "Scratch-2026" / "visnav").string(), why), "inject gate: both gates passed, scratch output, allowed");
   }
   std::printf("[NEML] %s (%d failures)\n", g_fail ? "FAIL" : "PASS", g_fail);
   return g_fail ? 1 : 0;
