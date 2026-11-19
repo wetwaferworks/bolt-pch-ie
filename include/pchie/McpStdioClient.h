@@ -17,6 +17,7 @@
 
 #include "pchie/MiniJson.h"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -29,7 +30,8 @@ class McpStdioClient final {
   McpStdioClient& operator=(const McpStdioClient&) = delete;
   ~McpStdioClient() { stop(3000); }
 
-  // cmdline: full command line (exe quoted). stderr_log: file the game's stderr is written to.
+  // cmdline: full command line (exe quoted; it is started by its absolute path, never searched for).
+  // stderr_log: file the game's stderr is written to. The game inherits only its three standard handles.
   bool start(const std::wstring& cmdline, const std::wstring& workdir, const std::wstring& stderr_log,
              std::string& err) {
     if (proc_ || in_w_ || out_r_) {  // never overwrite live handles; call stop() first
@@ -44,6 +46,24 @@ class McpStdioClient final {
       for (HANDLE* h : {&in_r, &out_w, &in_w_, &out_r_}) if (*h) { CloseHandle(*h); *h = nullptr; }
       if (log_h && log_h != INVALID_HANDLE_VALUE) CloseHandle(log_h);
     };
+    // The program to start, as an absolute path given to CreateProcessW itself, so it is never looked up along
+    // the search path (an unquoted path with spaces, or a bare name, could otherwise start something else).
+    std::wstring exe;
+    if (!cmdline.empty() && cmdline[0] == L'"') {
+      const size_t q = cmdline.find(L'"', 1);
+      if (q != std::wstring::npos) exe = cmdline.substr(1, q - 1);
+    } else {
+      exe = cmdline.substr(0, cmdline.find(L' '));
+    }
+    {
+      std::error_code fec;
+      const std::filesystem::path ep = std::filesystem::absolute(std::filesystem::path(exe), fec);
+      if (exe.empty() || fec || !std::filesystem::is_regular_file(ep, fec)) {
+        err = "the program to start is not a file";
+        return false;
+      }
+      exe = ep.wstring();
+    }
     if (!CreatePipe(&in_r, &in_w_, &sa, 1 << 16) || !CreatePipe(&out_r_, &out_w, &sa, 1 << 20)) {
       err = "CreatePipe failed";
       close_all(nullptr);
@@ -58,17 +78,32 @@ class McpStdioClient final {
       close_all(nullptr);
       return false;
     }
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = in_r;
-    si.hStdOutput = out_w;
-    si.hStdError = log;
+    // The child inherits exactly its three standard handles (as Peachy does since 47bbca3): without a handle
+    // list every inheritable handle in this process would go to the game too.
+    HANDLE inherit[3] = {in_r, out_w, log};
+    SIZE_T al_size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &al_size);
+    std::vector<unsigned char> al_buf(al_size ? al_size : 1);
+    auto al = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(al_buf.data());
+    if (!al_size || !InitializeProcThreadAttributeList(al, 1, 0, &al_size) ||
+        !UpdateProcThreadAttribute(al, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit, sizeof(inherit), nullptr, nullptr)) {
+      err = "cannot limit the handles the game inherits";
+      close_all(log);
+      return false;
+    }
+    STARTUPINFOEXW si{};
+    si.StartupInfo.cb = sizeof(si);
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = in_r;
+    si.StartupInfo.hStdOutput = out_w;
+    si.StartupInfo.hStdError = log;
+    si.lpAttributeList = al;
     PROCESS_INFORMATION pi{};
     std::vector<wchar_t> cl(cmdline.begin(), cmdline.end());
     cl.push_back(0);
-    const BOOL ok = CreateProcessW(nullptr, cl.data(), nullptr, nullptr, TRUE, 0, nullptr,
-                                   workdir.empty() ? nullptr : workdir.c_str(), &si, &pi);
+    const BOOL ok = CreateProcessW(exe.c_str(), cl.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT, nullptr,
+                                   workdir.empty() ? nullptr : workdir.c_str(), &si.StartupInfo, &pi);
+    DeleteProcThreadAttributeList(al);
     CloseHandle(in_r);
     CloseHandle(out_w);
     CloseHandle(log);

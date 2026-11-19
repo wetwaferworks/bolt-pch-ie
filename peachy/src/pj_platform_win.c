@@ -180,7 +180,7 @@ int pj_proc_spawn(pj_proc* p, const char* const* argv, uint32_t argc, const char
   SIZE_T al_size = 0;
   STARTUPINFOEXW si;
   PROCESS_INFORMATION pi;
-  wchar_t *cl, *wd = NULL, *wl;
+  wchar_t *cl, *wd = NULL, *wl, *wexe = NULL;
   uint32_t i;
   BOOL ok;
   memset(p, 0, sizeof(*p));
@@ -205,11 +205,14 @@ int pj_proc_spawn(pj_proc* p, const char* const* argv, uint32_t argc, const char
   free(wl);
   cl = build_cmdline(argv, argc);
   if (workdir) wd = widen(workdir);
-  if (log == INVALID_HANDLE_VALUE || !cl || (workdir && !wd)) {
+  /* The program is given to CreateProcessW by name too, so it is never looked up along the search path. */
+  wexe = widen(argv[0]);
+  if (log == INVALID_HANDLE_VALUE || !cl || !wexe || (workdir && !wd)) {
     if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
     CloseHandle(in_r); CloseHandle(in_w); CloseHandle(out_r); CloseHandle(out_w);
     free(cl);
     free(wd);
+    free(wexe);
     return -1;
   }
   /* The child inherits exactly its three standard handles and nothing else. Without a handle list, every
@@ -236,7 +239,7 @@ int pj_proc_spawn(pj_proc* p, const char* const* argv, uint32_t argc, const char
   si.StartupInfo.hStdError = log;
   si.lpAttributeList = al;
   memset(&pi, 0, sizeof(pi));
-  ok = al ? CreateProcessW(NULL, cl, NULL, NULL, TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, wd,
+  ok = al ? CreateProcessW(wexe, cl, NULL, NULL, TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, wd,
                            &si.StartupInfo, &pi)
           : FALSE;
   if (al) {
@@ -248,6 +251,7 @@ int pj_proc_spawn(pj_proc* p, const char* const* argv, uint32_t argc, const char
   CloseHandle(log);
   free(cl);
   free(wd);
+  free(wexe);
   if (!ok) {
     CloseHandle(in_w);
     CloseHandle(out_r);
