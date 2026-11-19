@@ -11,7 +11,7 @@ model-level scale fit are described under "Block and model reconstruction" below
 For a weight matrix `W` of shape `rows x cols`:
 
 ```
-W[i,j]  ~  s1[i] * (U[i,:] Â· V[j,:]) * s2[j]
+W[i,j]  ~  s1[i] * (U[i,:] · V[j,:]) * s2[j]
 ```
 
 with `U` and `V` in `{+1,-1}` and rank chosen from a bits-per-weight target:
@@ -53,15 +53,15 @@ double-buffered tiles with `cudaMemcpyAsync` on a pair of copy streams that
 overlap the cuBLAS work. Tile size is chosen from `cudaMemGetInfo` at the start
 of each tensor, leaving 256 MiB of device memory in reserve so a 4 GB card is
 not asked to page through WDDM shared memory. cuBLAS runs in pedantic / IEEE
-mode (no TF32). The rÃ—r system is factored and solved on the device (cuSOLVER) so the many right-hand sides do not sit on the host.
+mode (no TF32). The r×r system is factored and solved on the device (cuSOLVER) so the many right-hand sides do not sit on the host.
 
 CPU vs CUDA parity is checked in `pchie_nanoquant_test` on small matrices, with
 documented tolerances:
 
-- `|cosine_cpu - cosine_cuda| â‰¤ 1e-4`
-- `|rel_cpu - rel_cuda| â‰¤ 1e-4`
-- relative L2 between the two reconstructions `â‰¤ 1e-3`
-- scale L2 relative `â‰¤ 1e-3` when every sign agrees
+- `|cosine_cpu - cosine_cuda| ≤ 1e-4`
+- `|rel_cpu - rel_cuda| ≤ 1e-4`
+- relative L2 between the two reconstructions `≤ 1e-3`
+- scale L2 relative `≤ 1e-3` when every sign agrees
 
 Signs may differ where a latent is under `1e-5` in magnitude; a reconstruction
 that stays inside those tolerances still passes. The CUDA section is skipped,
@@ -79,8 +79,8 @@ For each linear in a block, in order:
 1. The remaining dense (not-yet-factored) linears are tuned with AdamW (weight
    decay 0), cosine learning-rate decay, and a weighted MSE against the teacher
    block's outputs. Importance follows the paper: the down-projection's output
-   Hessian diagonal, with Ledoit-Wolf-style shrinkage `H' = (1-Î±)H + Î± mean(H)`
-   and `Î± = 0.4`.
+   Hessian diagonal, with Ledoit-Wolf-style shrinkage `H' = (1-α)H + α mean(H)`
+   and `α = 0.4`.
 2. That linear is factorized with the Milestone 1 LB-ADMM initializer (streamed
    CUDA when `--cuda` is requested).
 3. The new factors are refined with a straight-through estimator (signs in the
@@ -127,7 +127,7 @@ invent a job or write an original model.
 directory (default `D:\scratch\nanoquant-jobs`). A `job.txt` file in that
 directory names a reconstruct output directory that already has a journal. If
 the user has used the machine in the last two seconds (`GetLastInputInfo`), or
-the GPU is already in use by `pchie_nanoquant`, a Play build (A9â€“E9,
+the GPU is already in use by `pchie_nanoquant`, a Play build (A9–E9,
 PlayMutexFree, Play-G1), or any other compute process `nvidia-smi` reports, the
 runner exits without starting anything. An empty watch directory is a no-op.
 
@@ -164,7 +164,7 @@ NanoQuant builds on, and we credit, the methods named in the paper and its
 references, including:
 
 - Low-rank binary factorization as used in LittleBit (Lee et al., 2025) and DBF
-  (BoÅ¾a and Macko, 2026), which NanoQuant follows for the `s1 (U V^T) s2` form.
+  (Boža and Macko, 2026), which NanoQuant follows for the `s1 (U V^T) s2` form.
 - The alternating direction method of multipliers (Gabay and Mercier, 1976;
   Boyd et al.).
 - Sign-Value Independent Decomposition (Pouransari, Cao and Tuzel, 2020; also
@@ -172,7 +172,7 @@ references, including:
 - Kronecker-factored approximate curvature (K-FAC) for a Hessian-weighted
   reconstruction (Martens and Grosse, 2015), and Ledoit-Wolf shrinkage of the
   diagonal estimates (Ledoit and Wolf, 2004).
-- The straight-through estimator (Bengio, LÃ©onard and Courville, 2013), used in
+- The straight-through estimator (Bengio, Léonard and Courville, 2013), used in
   the later block-reconstruction stage, not in this initialization.
 - The broader post-training quantization line the paper sits in, including
   AdaRound (Nagel et al., 2020), GPTQ (Frantar et al., 2022) and related
