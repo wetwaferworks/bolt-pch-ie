@@ -202,7 +202,7 @@ int main(int argc, char **argv) {
 
     ternary_source_file src;
     std::memset(&src, 0, sizeof src);
-    if (ternary_open_source(model, &src, error, sizeof error) != 0) {
+    if (!ternary_open_source(model, &src, error, sizeof error)) {
         std::fprintf(stderr, "open failed: %s\n", error);
         return 1;
     }
@@ -261,8 +261,7 @@ int main(int argc, char **argv) {
                 continue;
             }
             std::vector<float> W((size_t)rows * (size_t)cols);
-            if (ternary_read_rows(file, &src, t, 0, (uint64_t)rows, &raw, &raw_cap, W.data(), error, sizeof error) !=
-                0) {
+            if (!ternary_read_rows(file, &src, t, 0, (uint64_t)rows, &raw, &raw_cap, W.data(), error, sizeof error)) {
                 std::fprintf(stderr, "read failed %s: %s\n", t->name, error);
                 ++n_fail;
                 rc = 1;
