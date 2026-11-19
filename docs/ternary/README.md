@@ -241,6 +241,19 @@ chunk's end. The model, the reference folder and an input pack are opened read-o
 parity with I2 and with the C++ B3 packing, the padded fit) and `pchie_ternary_pack_cli` (end to end against the
 converter's own PTN1 output). Fuzz target: `pchie_ternary_pack_fuzz`.
 
+## Measured packing of Little Super Nemo
+
+On 19 November 2026 the 63 source shards of Little Super Nemo were packed on TheWorkstation in 1 hour 57 minutes (6:56 AM to 8:54 AM Eastern). The 32.322 GiB PTN1 fallback (`D:\scratch\little-super-nemo-ternary-2026-11-19`, newest file 4:03 AM Eastern) was opened read-only and was not written. Every shard was parity-checked against that fallback.
+
+| Variant | Files | Bytes | GiB | Notes |
+| --- | ---: | ---: | ---: | --- |
+| PTN1 fallback | (existing) | 34,705,233,389 | 32.322 | 2-bit I2 and float32 scales; left unchanged |
+| `b3-f32` | 63 | 28,536,827,040 | 26.577 | five trits per byte, float32 scales; 1.852 bits per ternary weight |
+| `b3-tight` | 63 | 27,835,589,658 | 25.924 | compact scales (42,295 byte-per-row, 14 half-float), int8 embedding, 768 raw tensors |
+| `rans-tight` | 63 | 26,545,979,701 | 24.723 | same as tight, with rANS on the trit stream (1.518 bits per ternary weight in the stream itself) |
+
+Parity, over all 42,309 ternary tensors and 123,260,108,800 ternary weights, on all three variants: 0 I2 code differences, 0 float32 scale differences, 0 missing tensors, 0 hash, parse or decode failures. The trit packing is 24,673,162,240 bytes (1.601 bits per weight). Compact scales use 1,283,915,832 bytes instead of 3,851,878,400 for float32. The rANS trit stream is 23,383,552,283 bytes. The largest compact-scale change against the fallback was 0.328 relative. Reconstruction relative error of the packed ternary values against the source weights is 0.436, in line with the fallback. Decode: about 4.5-4.9 billion weights a second for B3 to int8, about 210 million for rANS.
+
 ## Clean-room provenance
 
 The method this path implements is Microsoft's BitNet research: absmean ternarization and absmax int8
