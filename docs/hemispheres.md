@@ -92,8 +92,6 @@ pchie_hemispheres run --gguf Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf --ternary <ternar
 
 ## Results on Bolt E4B (19 November 2026)
 
-These results are from the first run, before the review fixes, when the tool still passed its own scores to Mjolnir. The run is being repeated with the reviewed gate.
-
 Bolt E4B Q4_K_M on an RTX 3050 Ti Laptop (4 GB), i5-12450H. GPU layers 0 to 37, tail layers 38 to 41 on the CPU. All hashes are provisional.
 
 **Probe.**
@@ -105,7 +103,8 @@ Bolt E4B Q4_K_M on an RTX 3050 Ti Laptop (4 GB), i5-12450H. GPU layers 0 to 37, 
 **Run** (`run --save-model`, defaults):
 
 - 75 lesson states from 6 mazes and 117 holdout states from 10 mazes, all 7x7.
-- 4,830 trunk tokens and 1,728 tail evaluations took 711 s of model work.
+- 4,830 trunk tokens and 1,728 tail evaluations took 634 s of model work (trunk 11.4 tokens a second, tail 32 ms each).
+- Every score below was worked out by Mjolnir from the holdout sets the tool wrote; the tool passed none. The first run, before the review fixes (when the tool still passed its own scores), reached the same decisions and the same tail in 711 s.
 
 Holdout play along the line (basis points of moves the answer key cleared):
 
@@ -122,7 +121,7 @@ Holdout play along the line (basis points of moves the answer key cleared):
 
 **Stage 2, the hemisphere swap.** Parents left t=3/8 and right t=5/8, both 9914. Both passes cleared 75 of 75. The child t=4/8 scored 9914, which does not beat both parents, so Mjolnir rolled back to the parents and journaled why.
 
-**New model.** t=3/8, holdout 9914 bp. Tail SHA-256 `646e25c4db58a0cc1892cc1a54903623a0c4bfebca75bb91e3ce2afc9a85f1eb`, saved as `new-model/tail.bf16` (744 MB) with its manifest and recipe. The journal has 5 records and verifies with `mj_ledger_verify`. Each of its sample sets reads back with `mj_hemi show` and `mj_hemi replay`.
+**New model.** t=3/8, holdout 9914 bp. Tail SHA-256 `646e25c4db58a0cc1892cc1a54903623a0c4bfebca75bb91e3ce2afc9a85f1eb`, saved as `new-model/tail.bf16` (744 MB) with its manifest and recipe. The journal has 5 records and verifies with `mj_ledger_verify` (head `2a78052c...`, provisional). The run folder holds 4 lesson sets and 8 holdout sets, each reading back with `mj_hemi show` and `mj_hemi replay`. Fed those sets by hand, the gate keeps the first actor with the right parent, refuses them when told the wrong parent, and rejects a holdout set with one flipped bit.
 
 **What this shows and what it does not.**
 
