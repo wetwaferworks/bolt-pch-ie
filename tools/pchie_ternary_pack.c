@@ -150,7 +150,7 @@ static int full_path(const char *in, char *out, size_t cap) {
     char *b;
     if (final_path_win(in, out, cap)) return 1;
     if (strlen(in) >= sizeof(tmp)) return 0;
-    strcpy(tmp, in);
+    memcpy(tmp, in, strlen(in) + 1);
     slash = strrchr(tmp, '/');
     b = strrchr(tmp, '\\');
     if (b && (!slash || b > slash)) slash = b;
@@ -166,7 +166,7 @@ static int full_path(const char *in, char *out, size_t cap) {
 #else
     if (realpath(in, out)) return 1;
     if (strlen(in) >= sizeof(tmp)) return 0;
-    strcpy(tmp, in);
+    memcpy(tmp, in, strlen(in) + 1);
     slash = strrchr(tmp, '/');
     if (!slash) {
         if (!last_part_ok(tmp) || !getcwd(parent, sizeof(parent))) return 0;
@@ -316,7 +316,7 @@ static int ref_dir_load(const char *dir, ref_dir *r) {
     uint8_t *text;
     memset(r, 0, sizeof(*r));
     if (strlen(dir) >= sizeof(r->dir)) return 0;
-    strcpy(r->dir, dir);
+    memcpy(r->dir, dir, strlen(dir) + 1);
     snprintf(path, sizeof(path), "%s/manifest.tsv", dir);
     text = read_whole(path, &len, UINT64_C(64) << 20);
     if (!text) return 0;
@@ -416,7 +416,7 @@ static int pack_open(pack_writer *w, const char *path) {
     uint8_t zero[TERNARY_PTP1_HEADER_BYTES];
     memset(w, 0, sizeof(*w));
     if (strlen(path) >= sizeof(w->final_path)) return 0;
-    strcpy(w->final_path, path);
+    memcpy(w->final_path, path, strlen(path) + 1);
     snprintf(w->partial, sizeof(w->partial), "%s.partial", path);
     if (file_exists(path)) {
         fprintf(stderr, "error: %s already exists\n", path);
@@ -770,17 +770,6 @@ static int variant_rows(const float *w, uint64_t first, uint64_t n, void *vctx) 
     return 1;
 }
 
-typedef struct collect_ctx {
-    float *all;
-    uint64_t cols;
-} collect_ctx;
-
-static int collect_rows(const float *w, uint64_t first, uint64_t n, void *vctx) {
-    collect_ctx *c = (collect_ctx *)vctx;
-    memcpy(c->all + first * c->cols, w, (size_t)(n * c->cols) * sizeof(float));
-    return 1;
-}
-
 /* Symmetric int8 per 128-weight group (the last may be shorter): scale = absmax / 127, q = round-half-even(w / s). */
 typedef struct q8_ctx {
     int8_t *q;
@@ -851,25 +840,62 @@ static const char *policy_name(policy p) {
     return "?";
 }
 
+/* Padded ternary fit of a tensor, chunk by chunk (so a large embedding never needs all its floats at once).
+ * codes / scales may be NULL (measure only); then per-chunk scratch is used. */
+typedef struct padded_ctx {
+    int8_t *codes;
+    float *scales;
+    int8_t *scratch_codes;
+    float *scratch_scales;
+    uint64_t cols;
+    int threads;
+    int failed;
+    rstats st;
+} padded_ctx;
+
+static int padded_rows(const float *w, uint64_t first, uint64_t n, void *vctx) {
+    padded_ctx *c = (padded_ctx *)vctx;
+    const uint64_t gpr = ternary_groups_per_row(c->cols);
+    int8_t *q = c->codes ? c->codes + first * c->cols : c->scratch_codes;
+    float *sc = c->scales ? c->scales + first * gpr : c->scratch_scales;
+    if (ternary_fit_rows_padded(w, n, c->cols, c->threads, q, sc) != TERNARY_CONVERT_OK) {
+        c->failed = 1;
+        return 0;
+    }
+    return stats_add_rows_parallel(&c->st, w, q, sc, n, c->cols, c->threads);
+}
+
+static int padded_fit_tensor(FILE *mf, const ternary_source_file *src, const ternary_source_tensor *t, int threads,
+                             uint64_t chunk_weights, int8_t *codes, float *scales, rstats *st) {
+    padded_ctx c;
+    uint64_t per = chunk_weights / t->columns;
+    const uint64_t gpr = ternary_groups_per_row(t->columns);
+    int ok;
+    if (!gpr) return 0;
+    if (per < 1) per = 1;
+    if (per > t->rows) per = t->rows;
+    memset(&c, 0, sizeof(c));
+    c.codes = codes;
+    c.scales = scales;
+    c.cols = t->columns;
+    c.threads = threads;
+    if (!codes) c.scratch_codes = (int8_t *)malloc((size_t)(per * t->columns));
+    if (!scales) c.scratch_scales = (float *)malloc((size_t)(per * gpr) * sizeof(float));
+    ok = (codes || c.scratch_codes) && (scales || c.scratch_scales) &&
+         for_each_rows(mf, src, t, chunk_weights, padded_rows, &c) && !c.failed;
+    free(c.scratch_codes);
+    free(c.scratch_scales);
+    if (ok) *st = c.st;
+    return ok;
+}
+
 /* Measure-only: the ternary error of a tensor kept in another form. */
 static void measure_as_ternary(FILE *mf, const ternary_source_file *src, const ternary_source_tensor *t,
                                const pack_options *o, uint64_t chunk_weights, rstats *into) {
-    const uint64_t weights = t->rows * t->columns, gpr = ternary_groups_per_row(t->columns);
-    float *w, *sc;
-    int8_t *codes;
-    collect_ctx cc;
-    if (!gpr || t->rows > TERNARY_HARD_MAX_ROWS) return;
-    w = (float *)malloc((size_t)weights * sizeof(float));
-    sc = (float *)malloc((size_t)(t->rows * gpr) * sizeof(float));
-    codes = (int8_t *)malloc((size_t)weights);
-    cc.all = w;
-    cc.cols = t->columns;
-    if (w && sc && codes && for_each_rows(mf, src, t, chunk_weights, collect_rows, &cc) &&
-        ternary_fit_rows_padded(w, t->rows, t->columns, o->threads, codes, sc) == TERNARY_CONVERT_OK)
-        stats_add_rows_parallel(into, w, codes, sc, t->rows, t->columns, o->threads);
-    free(w);
-    free(sc);
-    free(codes);
+    rstats st;
+    memset(&st, 0, sizeof(st));
+    if (padded_fit_tensor(mf, src, t, o->threads, chunk_weights, NULL, NULL, &st))
+        ternary_reconstruction_error_add(into, &st);
 }
 
 /* One tensor converted exactly as the PTN1 converter does it, then stored with compact scales. */
@@ -1076,18 +1102,12 @@ static int run_pack(const pack_options *o) {
         } else if (pol == POLICY_TERNARY) {
             /* embedding or conv1d through the padded path, float32 scales */
             const uint64_t gpr = ternary_groups_per_row(t->columns), groups = t->rows * gpr;
-            float *w = (float *)malloc((size_t)weights * sizeof(float));
             float *sc = (float *)malloc((size_t)groups * sizeof(float));
             int8_t *codes = (int8_t *)malloc((size_t)weights);
-            collect_ctx cc;
             rstats st;
             memset(&st, 0, sizeof(st));
-            cc.all = w;
-            cc.cols = t->columns;
-            ok = w && sc && codes && gpr && t->rows <= TERNARY_HARD_MAX_ROWS &&
-                 for_each_rows(mf, &src, t, copt.chunk_weights, collect_rows, &cc) &&
-                 ternary_fit_rows_padded(w, t->rows, t->columns, o->threads, codes, sc) == TERNARY_CONVERT_OK &&
-                 stats_add_rows_parallel(&st, w, codes, sc, t->rows, t->columns, o->threads);
+            ok = sc && codes && gpr && t->rows <= TERNARY_HARD_MAX_ROWS &&
+                 padded_fit_tensor(mf, &src, t, o->threads, copt.chunk_weights, codes, sc, &st);
             if (ok) {
                 to.rel_f32 = to.rel_stored = rel_of(&st);
                 to.cos_stored = cos_of(&st);
@@ -1102,7 +1122,6 @@ static int run_pack(const pack_options *o) {
                      encode_trits(o->trits, codes, t->rows, t->columns, &to.data, &to.data_len);
                 if (ok) T.scales_used[1]++;
             }
-            free(w);
             free(sc);
             free(codes);
         } else if (pol == POLICY_Q8) {

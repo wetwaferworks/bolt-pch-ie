@@ -210,11 +210,11 @@ ternary_convert_status ternary_i2_from_b3_row(const uint8_t *b3, uint64_t column
         int8_t t[640];
         uint64_t base;
         for (base = 0; base < columns; base += 640) {
-            const uint64_t n = columns - base < 640 ? columns - base : 640; /* a multiple of 128 */
-            const uint64_t bytes = (n + 4) / 5;
+            const uint64_t span = columns - base < 640 ? columns - base : 640; /* a multiple of 128 */
+            const uint64_t bytes = (span + 4) / 5;
             uint64_t k, blk;
             for (k = 0; k < bytes; ++k) memcpy(t + 5 * k, kB3Digits[b3[base / 5 + k]], 5);
-            for (blk = 0; blk < n / TERNARY_GROUP_WEIGHT_COUNT; ++blk) {
+            for (blk = 0; blk < span / TERNARY_GROUP_WEIGHT_COUNT; ++blk) {
                 const int8_t *q = t + blk * TERNARY_GROUP_WEIGHT_COUNT;
                 uint8_t *dst = i2 + (base / TERNARY_GROUP_WEIGHT_COUNT + blk) * TERNARY_I2_BLOCK_BYTES;
                 int j;
