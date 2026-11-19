@@ -185,6 +185,62 @@ checking on; exits 77, shown as skipped, without CUDA); `pchie_ternary_convert_f
 reproducible mutation fuzzer for the safetensors header reader that re-checks every accepted layout and decodes
 and fits each small tensor; also a libFuzzer target with `-DPCHIE_LIBFUZZER`).
 
+## Packed storage (`PTT1` tensors in `PTP1` packs)
+
+PTN1 keeps 2 bits per weight (I2, the compute layout) and a float32 scale per 128 weights: 2.25 bits per weight.
+`include/pchie/pchie_ternary_pack.h` adds a storage format that holds the very same ternary values in less space.
+A reader unpacks it to I2 once, at load time; nothing about compute changes. All of it is C17
+(`src/pchie_ternary_pack.c`, `tools/pchie_ternary_pack.c`).
+
+Trits (lossless; unpacking gives back the PTN1 I2 codes bit for bit):
+
+- **B3**: five weights per byte (3^5 = 243 <= 256), `ceil(cols / 5)` bytes per row, so 1.6 bits per weight.
+  The same definition as `Packing::B3` in `pchie_ternary.h`; the tests check the bytes match. Unpacking runs
+  through a 243-entry table, about 2 G weights a second on one core (4.7 G a second straight to I2).
+- **RANS**: the row-major trit stream entropy-coded with a static three-symbol rANS model (frequencies out of
+  4096, stored with the tensor), cut into chunks of whole rows (about 1 Mi trits each) that decode
+  independently. On these models it comes to about 1.52 bits per weight, about 5% under B3, and decodes at about
+  180 M weights a second per core. Optional.
+
+Scales (one per 128-weight group; the last group of a row may be shorter):
+
+- **f32**: as in PTN1, lossless.
+- **f16**: IEEE half of `scale * 2^shift`, one int8 shift per tensor so small scales keep their precision.
+- **u8row**: per row a float32 reference (the row's largest scale) and one byte per group,
+  `scale = (float)(((double)ref * u) / 255.0)`. About 0.07 bits per weight instead of 0.25.
+
+The codes never change, only the scales, and only where the error stays put: `pchie_ternary_pack pack --scales tight`
+(the default) measures, for every tensor, the reconstruction error against the source weights with u8row, f16 and
+f32 scales and keeps the first whose relative error is within `--tolerance` (default 1e-4, so at most 0.01% worse
+than f32). f32 always qualifies. The per-tensor choice and all three errors are in the pack's `.tsv`.
+
+Rows of any length: PTT1 does not need `cols` to be a multiple of 128. `ternary_fit_rows_padded` zero-pads each
+group to 128 and runs the same group fit; for least squares that is exactly the fit of the real weights (tested
+against the research fit). This is how a Mamba `conv1d` kernel (4 taps per channel) can be stored, if wanted.
+
+A pack can hold a whole model: tensors the ternary conversion skips are kept as **raw** source bytes (norms,
+Mamba `A_log` / `D` / `dt_bias`, biases, the vision encoder) or, for the input embedding, as **q8** (int8 with a
+float32 scale per 128 weights, about 0.6% relative error). `--embed q8|raw|ternary|skip`,
+`--conv1d raw|ternary|skip` and `--extras raw|skip` choose; the summary also reports what ternary would cost on
+the embedding and the conv1d kernels when they are kept in another form.
+
+```
+pchie_ternary_pack pack MODEL.safetensors --out shard.ptp --reference PTN1_SHARD_DIR   # parity with the PTN1 files
+pchie_ternary_pack verify shard.ptp --reference PTN1_SHARD_DIR                         # hashes, decode, exact I2
+pchie_ternary_pack recode shard.ptp --out shard-rans.ptp --trits rans                 # lossless
+pchie_ternary_pack from-ptn PTN1_SHARD_DIR --out shard.ptp                             # B3 + f32, no source needed
+pchie_ternary_pack bench shard.ptp
+```
+
+Safety: every reader treats its input as untrusted (sizes and offsets checked before use, overflow-checked
+arithmetic, a checksum on each tensor and SHA-256 on each payload and on the index, failures leave zeroed
+outputs). The rANS decoder checks every byte it reads and that it ends in its starting state exactly at the
+chunk's end. The model, the reference folder and an input pack are opened read-only; output goes to
+`FILE.partial`, created new, and is renamed only when complete, never over an existing file. Tests:
+`pchie_ternary_pack` (format, refusals, exhaustive half-float rounding, rANS on many shapes and distributions,
+parity with I2 and with the C++ B3 packing, the padded fit) and `pchie_ternary_pack_cli` (end to end against the
+converter's own PTN1 output). Fuzz target: `pchie_ternary_pack_fuzz`.
+
 ## Clean-room provenance
 
 The method this path implements is Microsoft's BitNet research: absmean ternarization and absmax int8
