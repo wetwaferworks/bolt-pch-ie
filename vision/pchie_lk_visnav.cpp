@@ -660,7 +660,7 @@ int main(int argc, char** argv) {
       say("NEML: memory block %zu tokens (cap 384, real tokenizer); recording=%d inject=%d", nt, int(neml::process_config().record), int(a.neml_inject));
       if (a.neml_inject) {
         brain.neml_prefix = dg;
-        neml_inject_sha = sha_hex(std::vector<uint8_t>(dg.begin(), dg.end()));
+        neml_inject_sha = sha_hex(dg);
         say("NEML INJECT ON (scratch only): neml_inject=1 memory block sha256=%s is the first link of the side chain", neml_inject_sha.c_str());
       }
     }
