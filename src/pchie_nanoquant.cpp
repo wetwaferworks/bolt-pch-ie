@@ -152,10 +152,12 @@ static void gemm(int transA, int transB, int m, int n, int k, float alpha,
     const int ldb = transB ? k : n;
     /* Tiled over i,j to keep the inner product in cache. */
     const int TS = 64;
+    const int ntiles = (m + TS - 1) / TS;
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int i0 = 0; i0 < m; i0 += TS) {
+    for (int tile = 0; tile < ntiles; ++tile) {
+        const int i0 = tile * TS;
         const int i1 = i0 + TS < m ? i0 + TS : m;
         for (int j0 = 0; j0 < n; j0 += TS) {
             const int j1 = j0 + TS < n ? j0 + TS : n;
