@@ -254,6 +254,14 @@ On 19 November 2026 the 63 source shards of Little Super Nemo were packed on The
 
 Parity, over all 42,309 ternary tensors and 123,260,108,800 ternary weights, on all three variants: 0 I2 code differences, 0 float32 scale differences, 0 missing tensors, 0 hash, parse or decode failures. The trit packing is 24,673,162,240 bytes (1.601 bits per weight). Compact scales use 1,283,915,832 bytes instead of 3,851,878,400 for float32. The rANS trit stream is 23,383,552,283 bytes. The largest compact-scale change against the fallback was 0.328 relative. Reconstruction relative error of the packed ternary values against the source weights is 0.436, in line with the fallback. Decode: about 4.5-4.9 billion weights a second for B3 to int8, about 210 million for rANS.
 
+## NanoQuant (low-rank binary factors)
+
+A later, separate path can store a linear layer as two binary matrices and two
+scale vectors, following NanoQuant (Chong, Kim, Kim and Choi, ICML 2026). The
+tool `pchie_nanoquant` runs the published initialization only (LB-ADMM). See
+[nanoquant.md](nanoquant.md) for the method, the credits, and the Apache 2.0
+notice of the official project.
+
 ## Clean-room provenance
 
 The method this path implements is Microsoft's BitNet research: absmean ternarization and absmax int8

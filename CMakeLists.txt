@@ -563,6 +563,31 @@ if(PCHIE_FUZZ)
   set_tests_properties(pchie_ternary_pack_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 900)
 endif()
 
+# Low-rank binary factorization (NanoQuant LB-ADMM initialization). Clean-room C++
+# from the published method; see include/pchie/pchie_nanoquant.h and docs/ternary/nanoquant.md.
+add_library(pchie_nanoquant STATIC src/pchie_nanoquant.cpp)
+target_include_directories(pchie_nanoquant PUBLIC include)
+set_target_properties(pchie_nanoquant PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+if(MSVC)
+  target_compile_options(pchie_nanoquant PRIVATE /fp:precise /W4)
+else()
+  target_compile_options(pchie_nanoquant PRIVATE -ffp-contract=off -fno-fast-math -Wall -Wextra)
+  target_link_libraries(pchie_nanoquant PUBLIC m)
+endif()
+add_executable(pchie_nanoquant_tool tools/pchie_nanoquant.cpp peachy/src/pj_sha256.c)
+set_target_properties(pchie_nanoquant_tool PROPERTIES OUTPUT_NAME pchie_nanoquant CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(pchie_nanoquant_tool PRIVATE src peachy/src)
+target_link_libraries(pchie_nanoquant_tool PRIVATE pchie_nanoquant pchie_ternary_convert)
+if(MSVC)
+  target_compile_options(pchie_nanoquant_tool PRIVATE /fp:precise /W4)
+else()
+  target_compile_options(pchie_nanoquant_tool PRIVATE -ffp-contract=off -fno-fast-math -Wall -Wextra)
+endif()
+add_executable(pchie_nanoquant_test tests/pchie_nanoquant_test.cpp)
+set_target_properties(pchie_nanoquant_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_link_libraries(pchie_nanoquant_test PRIVATE pchie_nanoquant)
+add_test(NAME pchie_nanoquant COMMAND pchie_nanoquant_test)
+
 # The left and right hemispheres on a real model (see docs/hemispheres.md): MJHEMI2 sample
 # sets with the same bytes as Mjolnir's, the grid-maze world with its answer key, weight
 # overlays by canonical tensor name, starting Mjolnir without a shell, and ternary files
